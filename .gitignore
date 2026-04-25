@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# editor
+.vscode/
+.idea/
+
+# chud runtime data — never check in
+.chud-local/
+workspaces/
