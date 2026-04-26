@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
-import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -65,7 +61,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         width: 90%;
         max-width: 100;
         height: 32;
-        height: 32;
         background: $surface;
         border: round $accent;
         padding: 1 2;
@@ -78,7 +73,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         margin-bottom: 1;
     }
     NewSessionModal TextArea {
-        height: 8;
         height: 8;
         margin-bottom: 1;
     }
@@ -113,8 +107,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     """
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("f2", "start", "Start", priority=True),
         Binding("escape", "cancel", "Cancel"),
         Binding("f2", "start", "Start", priority=True),
     ]
@@ -168,9 +160,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     def action_start(self) -> None:
         self._submit()
 
-    def action_start(self) -> None:
-        self._submit()
-
     def on_mount(self) -> None:
         self.query_one("#repo", Input).focus()
 
@@ -180,13 +169,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         if not prompt:
             return
         repo_path = Path(repo_str).expanduser() if repo_str else None
-        options = {
-            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
-            for opt in SESSION_OPTIONS
-        }
-        self.dismiss(
-            NewSessionResult(repo_path=repo_path, prompt=prompt, options=options)
-        )
         options = {
             opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
             for opt in SESSION_OPTIONS
