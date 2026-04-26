@@ -349,6 +349,8 @@ async def test_publish_draft_prs_uses_override_title_and_body(monkeypatch):
         captured.append(cmd)
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return 0, "1", ""
         if cmd[:3] == ["git", "push", "-u"]:

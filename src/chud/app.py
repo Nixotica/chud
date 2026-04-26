@@ -553,11 +553,8 @@ class ChudApp(App[None]):
             self._resolve_active_prompt(req)
             return
         self._select_session(req.session_id)
-        try:
+        with contextlib.suppress(Exception):
             self.query_one(SessionView).input.focus()
-        except Exception:
-            # Focusing is best-effort; the prompt is still considered "shown".
-            pass
 
 
 def main() -> int:
