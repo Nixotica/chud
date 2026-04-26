@@ -76,6 +76,12 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         height: 1;
         margin: 0;
         padding: 0;
+        border: none;
+        background: transparent;
+    }
+    NewSessionModal #options-group Checkbox:focus {
+        border: none;
+        background: $boost;
     }
     NewSessionModal Horizontal#buttons {
         height: 3;
