@@ -14,6 +14,7 @@ from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
 
+from chud.markup import TextHeading, TextMuted
 from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
@@ -302,7 +303,7 @@ class QuestionModal(ScrollableModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold]Question from session {self.session_id[:8]}[/bold]",
+                TextHeading(f"Question from session {self.session_id[:8]}"),
                 id="question-title",
             )
             scroll = VerticalScroll()
@@ -311,7 +312,7 @@ class QuestionModal(ScrollableModalScreen[str | None]):
                 for idx, q in enumerate(self.questions):
                     header = str(q.get("header") or "").strip()
                     if header:
-                        yield Static(f"[bold]{header}[/bold]", classes="question-header")
+                        yield Static(TextHeading(header), classes="question-header")
                     # Question body wraps naturally; no expand/collapse.
                     yield Static(
                         str(q.get("question") or "(no question text)"),
@@ -320,7 +321,7 @@ class QuestionModal(ScrollableModalScreen[str | None]):
                     )
                     raw = q.get("_raw")
                     if raw:
-                        yield Static(f"[dim]{raw}[/dim]")
+                        yield Static(TextMuted(str(raw)))
                     options = q.get("options") or []
                     multi = bool(q.get("multiSelect"))
                     if not options:

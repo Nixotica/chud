@@ -4,6 +4,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Static
 
+from chud.markup import TextDanger, TextHeading, TextMuted, TextPath, TextSuccess
 from chud.types import SessionState
 from chud.widgets._scrollable_modal import ScrollableModalScreen
 
@@ -93,11 +94,11 @@ class CleanupConfirmationModal(ScrollableModalScreen[bool]):
 
     def _compose_published(self) -> ComposeResult:
         yield Static(
-            f"[bold]Clean up session {self.state.id[:8]}? Work is pushed.[/bold]",
+            TextHeading(f"Clean up session {self.state.id[:8]}? Work is pushed."),
             id="title",
         )
         with VerticalScroll():
-            yield Static("[bold green]Draft PRs opened:[/bold green]")
+            yield Static(TextSuccess("Draft PRs opened:"))
             for pr in self.published_prs:
                 repo = pr.get("repo") or "(repo)"
                 url = pr.get("url") or ""
@@ -106,27 +107,27 @@ class CleanupConfirmationModal(ScrollableModalScreen[bool]):
             if self.state.attached_repos:
                 for wt in self.state.attached_repos.values():
                     yield Static(
-                        f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
-                        f"[dim](branch {wt.branch})[/dim]"
+                        f"  • worktree:  {TextPath(str(wt.worktree_path))}  "
+                        f"{TextMuted(f'(branch {wt.branch})')}"
                     )
             else:
-                yield Static("  [dim](no attached repos)[/dim]")
+                yield Static(f"  {TextMuted('(no attached repos)')}")
 
     def _compose_unpublished(self) -> ComposeResult:
         yield Static(
-            f"[bold]Clean up session {self.state.id[:8]}?[/bold]",
+            TextHeading(f"Clean up session {self.state.id[:8]}?"),
             id="title",
         )
         with VerticalScroll():
-            yield Static("This will [red]permanently delete[/red] every attached worktree:")
+            yield Static(f"This will {TextDanger('permanently delete')} every attached worktree:")
             if self.state.attached_repos:
                 for wt in self.state.attached_repos.values():
                     yield Static(
-                        f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
-                        f"[dim](branch {wt.branch})[/dim]"
+                        f"  • worktree:  {TextPath(str(wt.worktree_path))}  "
+                        f"{TextMuted(f'(branch {wt.branch})')}"
                     )
             else:
-                yield Static("  [dim](no attached repos)[/dim]")
+                yield Static(f"  {TextMuted('(no attached repos)')}")
             yield Static(
                 "\nUnpushed commits on the chud branch will be lost unless "
                 "you also enabled the draft-PR option."

@@ -5,6 +5,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Markdown, Static
 
+from chud.markup import TextHeading
 from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
@@ -77,7 +78,10 @@ class PlanApprovalModal(ScrollableModalScreen[bool | str]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(f"[bold]Plan from session {self.session_id[:8]}[/bold]", id="plan-title")
+            yield Static(
+                TextHeading(f"Plan from session {self.session_id[:8]}"),
+                id="plan-title",
+            )
             with VerticalScroll():
                 yield Markdown(self.plan_text or "_(empty plan)_")
             with Horizontal():

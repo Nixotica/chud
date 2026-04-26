@@ -18,6 +18,7 @@ from chud import gh as gh_mod
 from chud import state as state_mod
 from chud.gh import Issue
 from chud.manager import SessionManager
+from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
@@ -473,7 +474,7 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
-            view.transcript.write(f"[bold green]+ draft PR:[/bold green] {repo} → {url}")
+            view.transcript.write(f"{TextSuccess('+ draft PR:')} {repo} → {url}")
             # Refresh the issues + PR-link caches now so the next `n` press
             # filters out the issue this PR just attached to, instead of
             # waiting for the 120s background tick. GitHub may need a moment
@@ -488,15 +489,13 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"PR failed ({repo}): {err}", severity="error")
             view = self.query_one(SessionView)
-            view.transcript.write(f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}")
+            view.transcript.write(f"{TextError('! PR failed:')} {repo or '(session)'}: {err}")
         elif event.kind == EventKind.WORKTREE_DISCARDED:
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
             view = self.query_one(SessionView)
             view.transcript.write(
-                f"[dim]· discarded empty branch {branch}"
-                + (f" ({repo})" if repo else "")
-                + "[/dim]"
+                TextMuted(f"· discarded empty branch {branch}" + (f" ({repo})" if repo else ""))
             )
 
     # ------------------------------------------------------------------ prompt queue
