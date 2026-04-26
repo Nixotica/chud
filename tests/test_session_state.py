@@ -66,3 +66,33 @@ def test_session_state_drops_unknown_persisted_options():
     s2 = SessionState.from_dict(d)
     assert "some_removed_option" not in s2.options
     assert s2.options[OPT_SELF_CLEANUP] is True
+
+
+def test_session_state_roundtrips_approved_plan():
+    plan = "# Add foo\n\n## Context\n\nWe need foo because reasons.\n"
+    s = SessionState(
+        id="abc123",
+        workspace_dir=Path("/tmp/chud-ws/abc123"),
+        approved_plan=plan,
+    )
+    d = s.to_dict()
+    assert d["approved_plan"] == plan
+    s2 = SessionState.from_dict(d)
+    assert s2.approved_plan == plan
+
+
+def test_legacy_session_without_approved_plan_loads_as_none():
+    legacy = {
+        "id": "old1",
+        "workspace_dir": "/tmp/chud-ws/old1",
+        "status": SessionStatus.DONE.value,
+        "initial_prompt": "legacy",
+        "attached_repos": {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "pending_question": None,
+        "error": None,
+        # no "approved_plan" key
+    }
+    s = SessionState.from_dict(legacy)
+    assert s.approved_plan is None

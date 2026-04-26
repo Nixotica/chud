@@ -20,6 +20,7 @@ KEY_LAST_ACTIVITY_AT = "last_activity_at"
 KEY_PENDING_QUESTION = "pending_question"
 KEY_ERROR = "error"
 KEY_OPTIONS = "options"
+KEY_APPROVED_PLAN = "approved_plan"
 
 
 class SessionStatus(str, Enum):
@@ -66,6 +67,7 @@ class SessionState:
     pending_question: str | None = None
     error: str | None = None
     options: dict[str, bool] = field(default_factory=dict)
+    approved_plan: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +81,7 @@ class SessionState:
             KEY_PENDING_QUESTION: self.pending_question,
             KEY_ERROR: self.error,
             KEY_OPTIONS: dict(self.options),
+            KEY_APPROVED_PLAN: self.approved_plan,
         }
 
     @classmethod
@@ -99,6 +102,7 @@ class SessionState:
             pending_question=d.get(KEY_PENDING_QUESTION),
             error=d.get(KEY_ERROR),
             options=normalize_options(d.get(KEY_OPTIONS)),
+            approved_plan=d.get(KEY_APPROVED_PLAN),
         )
 
 

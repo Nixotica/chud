@@ -7,6 +7,7 @@ STATUS_CHANGED(DONE) event.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from chud import pr as pr_mod
 from chud.manager import SessionManager
 from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP
+from chud.pr import PRResult
 from chud.session import AgentSession
 from chud.types import Event, EventKind, SessionState, SessionStatus
 from chud.worktree import WorktreeManager
@@ -87,7 +89,7 @@ async def test_done_with_make_draft_pr_invokes_publisher(tmp_path, monkeypatch):
     await mgr._handle_event(_done_event(sess.state.id), sess)
 
     # _on_session_done schedules an asyncio task; await pending tasks.
-    pending = list(mgr._pr_tasks)
+    pending = list(mgr._pr_tasks.values())
     for task in pending:
         await task
 
@@ -167,3 +169,73 @@ async def test_kill_session_default_does_not_cleanup(tmp_path, monkeypatch):
     await mgr.kill_session(sess.state.id)
 
     assert cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_done_with_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
+    """CLEANUP_REQUESTED must be broadcast only after publish_draft_prs returns.
+
+    Locks the bug where cleanup raced PR publish, wiping the worktree before
+    git push could finish.
+    """
+    mgr = SessionManager()
+    sess = _make_session(
+        {OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path
+    )
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    async def fake_publish(state):
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return [PRResult(repo_label="r", branch="b", url="https://example/pr/1")]
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
+
+    queue = mgr.subscribe()
+    await mgr._handle_event(_done_event(sess.state.id), sess)
+
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+
+    assert EventKind.PR_PUBLISHED in kinds
+    assert EventKind.CLEANUP_REQUESTED in kinds
+    assert kinds.index(EventKind.PR_PUBLISHED) < kinds.index(
+        EventKind.CLEANUP_REQUESTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_with_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
+    """If PR publish raises, cleanup is still offered (after PR_FAILED)."""
+    mgr = SessionManager()
+    sess = _make_session(
+        {OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path
+    )
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    async def boom(state):
+        raise RuntimeError("publish exploded")
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", boom)
+
+    queue = mgr.subscribe()
+    await mgr._handle_event(_done_event(sess.state.id), sess)
+
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+
+    assert kinds.count(EventKind.CLEANUP_REQUESTED) == 1
+    assert EventKind.PR_FAILED in kinds
+    assert kinds.index(EventKind.PR_FAILED) < kinds.index(
+        EventKind.CLEANUP_REQUESTED
+    )

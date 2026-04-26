@@ -34,8 +34,10 @@ class SessionManager:
         # Sessions for which we've already fired DONE-side-effects, so re-emitted
         # STATUS_CHANGED(DONE) events (e.g. after a notification) don't re-trigger.
         self._done_handled: set[str] = set()
-        # Strong refs to in-flight PR-publish tasks so they aren't GC'd.
-        self._pr_tasks: set[asyncio.Task[None]] = set()
+        # Strong refs to in-flight DONE side-effect tasks (PR publish, then
+        # optional cleanup-broadcast) keyed by session id so kill_session can
+        # cancel a session's task in O(1).
+        self._pr_tasks: dict[str, asyncio.Task[None]] = {}
 
     # ------------------------------------------------------------------ subscribe
 
@@ -120,11 +122,19 @@ class SessionManager:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
         wt_mgr = self.worktrees.pop(session_id, None)
+        done_task = self._pr_tasks.pop(session_id, None)
         self._done_handled.discard(session_id)
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        # Cancel any in-flight DONE side-effect (PR publish + queued cleanup
+        # broadcast) before we tear down the worktree, otherwise rmtree races
+        # with git push.
+        if done_task is not None and not done_task.done():
+            done_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await done_task
         if sess is not None:
             await sess.stop()
         if cleanup_workspace and wt_mgr is not None:
@@ -183,15 +193,29 @@ class SessionManager:
             return
         self._done_handled.add(sid)
         opts = sess.state.options or {}
-        if opts.get(OPT_MAKE_DRAFT_PR):
-            task = asyncio.create_task(
-                self._publish_prs(sess.state), name=f"chud-pr-{sid}"
-            )
-            self._pr_tasks.add(task)
-            task.add_done_callback(self._pr_tasks.discard)
-        if opts.get(OPT_SELF_CLEANUP):
+        make_pr = bool(opts.get(OPT_MAKE_DRAFT_PR))
+        do_cleanup = bool(opts.get(OPT_SELF_CLEANUP))
+        if not (make_pr or do_cleanup):
+            return
+        if not make_pr:
             await self._broadcast(
                 Event(session_id=sid, kind=EventKind.CLEANUP_REQUESTED, payload={})
+            )
+            return
+        task = asyncio.create_task(
+            self._finish_done(sess.state, do_cleanup), name=f"chud-done-{sid}"
+        )
+        self._pr_tasks[sid] = task
+        task.add_done_callback(lambda _t, s=sid: self._pr_tasks.pop(s, None))
+
+    async def _finish_done(self, state: SessionState, request_cleanup: bool) -> None:
+        # PR publish must complete before cleanup is offered, otherwise the
+        # cleanup modal can race with the still-running git push and the user
+        # ends up with neither a worktree nor a PR.
+        await self._publish_prs(state)
+        if request_cleanup:
+            await self._broadcast(
+                Event(session_id=state.id, kind=EventKind.CLEANUP_REQUESTED, payload={})
             )
 
     async def _publish_prs(self, state: SessionState) -> None:

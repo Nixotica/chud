@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Literal
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -20,6 +22,22 @@ from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
 log = logging.getLogger(__name__)
+
+PromptKind = Literal["plan", "cleanup", "input"]
+
+
+@dataclass
+class PromptRequest:
+    """A pending blocking user-input request from one agent session.
+
+    Queued FIFO in ``ChudApp._prompt_queue`` so the first agent to ask for
+    input keeps the screen until its prompt is resolved, instead of being
+    covered by a later agent's modal.
+    """
+
+    session_id: str
+    kind: PromptKind
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 class ChudApp(App[None]):
@@ -51,6 +69,11 @@ class ChudApp(App[None]):
         self._selected_session_id: str | None = None
         self._open_plan_modals: set[str] = set()
         self._open_cleanup_modals: set[str] = set()
+        # FIFO queue of blocking user-input requests from agents. The first
+        # request is shown until resolved; later requests wait their turn so a
+        # newly-arrived modal can't cover one the user hasn't answered yet.
+        self._prompt_queue: list[PromptRequest] = []
+        self._prompt_active: PromptRequest | None = None
 
     # ------------------------------------------------------------------ layout
 
@@ -125,6 +148,7 @@ class ChudApp(App[None]):
         self._event_log.pop(sid, None)
         self._selected_session_id = None
         self.query_one(SessionView).show_session(None)
+        self._drop_session_prompts(sid)
 
     # ------------------------------------------------------------------ list selection
 
@@ -167,6 +191,15 @@ class ChudApp(App[None]):
             await sess.send_message(text)
         except Exception as e:
             self.notify(f"send_message failed: {e}", severity="error")
+            return
+        # If the active prompt was an "input" request from this session, the
+        # user has just answered it — advance the queue.
+        if (
+            self._prompt_active is not None
+            and self._prompt_active.kind == "input"
+            and self._prompt_active.session_id == sid
+        ):
+            self._resolve_active_prompt(self._prompt_active)
 
     # ------------------------------------------------------------------ event pump
 
@@ -191,10 +224,40 @@ class ChudApp(App[None]):
             if sess is not None:
                 self.query_one(SessionView).update_header(sess.state)
 
+        # A stop-hook NEEDS_USER_INPUT followed by a ResultMessage DONE leaves
+        # an "input" prompt active that nobody can resolve (the agent already
+        # finished, so the user has nothing to type). That stranded prompt
+        # blocks every later modal in the FIFO queue — including the
+        # post-DONE cleanup modal. Drop stale "input" prompts whenever a
+        # session leaves AWAITING_USER.
+        if event.kind == EventKind.STATUS_CHANGED:
+            new_status = event.payload.get("status")
+            if new_status != SessionStatus.AWAITING_USER.value:
+                self._drop_session_input_prompts(event.session_id)
+
         if event.kind == EventKind.PLAN_PROPOSED:
-            self._open_plan_modal(event.session_id, event.payload.get("plan", ""))
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="plan",
+                    payload={"plan": event.payload.get("plan", "")},
+                )
+            )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
-            self._open_cleanup_modal(event.session_id)
+            self._enqueue_prompt(
+                PromptRequest(session_id=event.session_id, kind="cleanup")
+            )
+        elif event.kind == EventKind.NEEDS_USER_INPUT:
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="input",
+                    payload={
+                        "message": event.payload.get("message", ""),
+                        "reason": event.payload.get("reason", ""),
+                    },
+                )
+            )
         elif event.kind == EventKind.PR_PUBLISHED:
             url = event.payload.get("url", "")
             repo = event.payload.get("repo", "")
@@ -212,8 +275,92 @@ class ChudApp(App[None]):
                 f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
             )
 
-    def _open_plan_modal(self, session_id: str, plan_text: str) -> None:
+    # ------------------------------------------------------------------ prompt queue
+
+    def _enqueue_prompt(self, req: PromptRequest) -> None:
+        """Append a blocking user-input request to the FIFO queue.
+
+        Dedups against both the active prompt and anything already queued for
+        the same (session, kind) pair so duplicate events (e.g. a re-fired
+        notification hook) don't stack the same prompt twice. Triggers the
+        next-prompt dispatcher in case nothing is currently shown.
+        """
+        if (
+            self._prompt_active is not None
+            and self._prompt_active.session_id == req.session_id
+            and self._prompt_active.kind == req.kind
+        ):
+            return
+        if any(
+            p.session_id == req.session_id and p.kind == req.kind
+            for p in self._prompt_queue
+        ):
+            return
+        self._prompt_queue.append(req)
+        self._maybe_show_next_prompt()
+
+    def _maybe_show_next_prompt(self) -> None:
+        """If nothing is currently shown, pop the next request and show it."""
+        if self._prompt_active is not None:
+            return
+        # Skip requests for sessions that no longer exist (killed mid-queue).
+        while self._prompt_queue:
+            req = self._prompt_queue.pop(0)
+            if self.manager.sessions.get(req.session_id) is None:
+                continue
+            self._prompt_active = req
+            if req.kind == "plan":
+                self._show_plan_modal(req)
+            elif req.kind == "cleanup":
+                self._show_cleanup_modal(req)
+            elif req.kind == "input":
+                self._show_input_focus(req)
+            return
+
+    def _resolve_active_prompt(self, req: PromptRequest) -> None:
+        """Mark the active prompt resolved and advance the queue.
+
+        Idempotent: only clears the active slot if `req` is still the one
+        showing (a session-kill could have already swapped it out).
+        """
+        if self._prompt_active is req:
+            self._prompt_active = None
+        self._maybe_show_next_prompt()
+
+    def _drop_session_prompts(self, session_id: str) -> None:
+        """Remove any queued/active prompts for a session that's going away."""
+        self._prompt_queue = [
+            p for p in self._prompt_queue if p.session_id != session_id
+        ]
+        if (
+            self._prompt_active is not None
+            and self._prompt_active.session_id == session_id
+        ):
+            self._prompt_active = None
+            self._maybe_show_next_prompt()
+
+    def _drop_session_input_prompts(self, session_id: str) -> None:
+        """Clear stale 'input' prompts when a session leaves AWAITING_USER."""
+        self._prompt_queue = [
+            p for p in self._prompt_queue
+            if not (p.session_id == session_id and p.kind == "input")
+        ]
+        if (
+            self._prompt_active is not None
+            and self._prompt_active.session_id == session_id
+            and self._prompt_active.kind == "input"
+        ):
+            self._prompt_active = None
+            self._maybe_show_next_prompt()
+
+    # ------------------------------------------------------------------ prompt renderers
+
+    def _show_plan_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        plan_text = req.payload.get("plan", "")
         if session_id in self._open_plan_modals:
+            # Should be impossible given the queue dedup above, but guard anyway.
+            self._resolve_active_prompt(req)
             return
         self._open_plan_modals.add(session_id)
 
@@ -233,14 +380,18 @@ class ChudApp(App[None]):
                     await sess.reject_plan()
             finally:
                 self._open_plan_modals.discard(session_id)
+                self._resolve_active_prompt(req)
 
         self.run_worker(show_modal(), exclusive=False)
 
-    def _open_cleanup_modal(self, session_id: str) -> None:
+    def _show_cleanup_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
         if session_id in self._open_cleanup_modals:
+            self._resolve_active_prompt(req)
             return
         sess = self.manager.sessions.get(session_id)
         if sess is None:
+            self._resolve_active_prompt(req)
             return
         self._open_cleanup_modals.add(session_id)
         state = sess.state
@@ -258,10 +409,31 @@ class ChudApp(App[None]):
                 if self._selected_session_id == session_id:
                     self._selected_session_id = None
                     self.query_one(SessionView).show_session(None)
+                # Drop any other queued prompts (e.g. a stale PLAN_PROPOSED)
+                # for the now-killed session so the queue doesn't try to
+                # re-show them.
+                self._drop_session_prompts(session_id)
             finally:
                 self._open_cleanup_modals.discard(session_id)
+                self._resolve_active_prompt(req)
 
         self.run_worker(show_modal(), exclusive=False)
+
+    def _show_input_focus(self, req: PromptRequest) -> None:
+        """Auto-select the asking session and focus the input box.
+
+        Unlike the modal kinds, this prompt has no screen to wait on; it
+        resolves in ``on_input_submitted`` when the user actually replies.
+        """
+        if self.manager.sessions.get(req.session_id) is None:
+            self._resolve_active_prompt(req)
+            return
+        self._select_session(req.session_id)
+        try:
+            self.query_one(SessionView).input.focus()
+        except Exception:
+            # Focusing is best-effort; the prompt is still considered "shown".
+            pass
 
 
 def main() -> int:

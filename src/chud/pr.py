@@ -5,12 +5,19 @@ Triggered by ``SessionManager`` when a session reaches DONE and the
 against its origin's default branch. Failures are reported per-repo via
 ``PRResult`` (and surfaced to the UI as ``PR_FAILED`` events) so a single
 broken push doesn't sink the whole batch.
+
+Title and body prefer the agent's approved plan (a ``# Heading`` for the
+title, a ``## Context`` section for the body) over the raw initial prompt,
+so PRs read as summaries of *what was done* rather than verbatim user input.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +29,12 @@ log = logging.getLogger(__name__)
 
 _TITLE_LIMIT = 72
 
+# A real GitHub push completes in a few seconds; anything past this is a
+# hang, typically a credential prompt that the TUI's raw-mode terminal
+# can't satisfy. Without this guard, _publish_prs parks forever and the
+# post-DONE CLEANUP_REQUESTED broadcast never fires.
+_RUN_TIMEOUT_S = 60.0
+
 
 @dataclass
 class PRResult:
@@ -31,15 +44,50 @@ class PRResult:
     error: str | None = None
 
 
+def _no_prompt_env() -> dict[str, str]:
+    """Env that forbids git/ssh from waiting on an interactive credential prompt.
+
+    Without these, ``git push`` inheriting the TUI's TTY can either block on
+    stdin (raw mode swallows the keypresses git expects) or scribble a
+    password prompt onto the screen — both manifest as "TUI got laggy and
+    nothing happened." With them set, git/ssh fail fast with an auth error
+    that surfaces as a PR_FAILED toast.
+    """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_ASKPASS", "/bin/true")
+    env.setdefault("SSH_ASKPASS", "/bin/true")
+    env.setdefault("SSH_ASKPASS_REQUIRE", "never")
+    return env
+
+
 async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-    """Run a subprocess, returning (returncode, stdout, stderr)."""
+    """Run a subprocess, returning (returncode, stdout, stderr).
+
+    stdin is wired to /dev/null so git/gh can never read from the parent
+    TTY, and a 60s wall-clock timeout kills any process that still hangs
+    despite that — preserving the invariant that ``_finish_done`` always
+    reaches its CLEANUP_REQUESTED broadcast.
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd) if cwd is not None else None,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_no_prompt_env(),
     )
-    out_b, err_b = await proc.communicate()
+    try:
+        out_b, err_b = await asyncio.wait_for(
+            proc.communicate(), timeout=_RUN_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        return (-1, "", f"timed out after {_RUN_TIMEOUT_S:.0f}s")
     return (
         proc.returncode if proc.returncode is not None else -1,
         out_b.decode(errors="replace").strip(),
@@ -64,21 +112,83 @@ async def _default_branch(repo_path: Path) -> str:
     return "main"
 
 
+# Match a top-level "# heading" line (single hash, not ## or more). DOTALL is
+# unnecessary because we only consume up to the newline.
+_H1_RE = re.compile(r"^[ \t]*#[ \t]+(?P<title>.+?)[ \t]*$", re.MULTILINE)
+# Match a "## Context" heading and capture everything until the next "## " or EOF.
+_CONTEXT_RE = re.compile(
+    r"^[ \t]*##[ \t]+context[ \t]*$\s*(?P<body>.+?)(?=^[ \t]*##[ \t]+|\Z)",
+    re.MULTILINE | re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_plan_title(plan_text: str) -> str | None:
+    """Return the first ``# Heading`` line of ``plan_text``, stripped, or None.
+
+    Skips ``##``/``###``/etc. — only the top-level title counts.
+    """
+    if not plan_text:
+        return None
+    m = _H1_RE.search(plan_text)
+    if not m:
+        return None
+    title = m.group("title").strip()
+    return title or None
+
+
+def _extract_plan_context(plan_text: str) -> str | None:
+    """Return the body of the first ``## Context`` section, stripped, or None."""
+    if not plan_text:
+        return None
+    m = _CONTEXT_RE.search(plan_text)
+    if not m:
+        return None
+    body = m.group("body").strip()
+    return body or None
+
+
+def _truncate_title(title: str) -> str:
+    if len(title) > _TITLE_LIMIT:
+        return title[: _TITLE_LIMIT - 1] + "…"
+    return title
+
+
 def _title_from_prompt(prompt: str) -> str:
+    """Fallback title derivation when no approved plan is available."""
     text = prompt.strip()
     if not text:
         return "chud session"
     first = text.splitlines()[0].strip() or "chud session"
-    if len(first) > _TITLE_LIMIT:
-        return first[: _TITLE_LIMIT - 1] + "…"
-    return first
+    return _truncate_title(first)
 
 
 def _body_from_prompt(session_id: str, prompt: str) -> str:
+    """Fallback body when no approved plan is available."""
     return (
         f"Draft PR opened by chud session `{session_id}`.\n\n"
         f"Initial prompt:\n\n```\n{prompt}\n```\n"
     )
+
+
+def _pick_title(state: SessionState) -> str:
+    """Prefer the approved plan's H1 heading; fall back to the prompt."""
+    if state.approved_plan:
+        plan_title = _extract_plan_title(state.approved_plan)
+        if plan_title:
+            return _truncate_title(plan_title)
+    return _title_from_prompt(state.initial_prompt)
+
+
+def _pick_body(state: SessionState) -> str:
+    """Prefer the plan's ``## Context`` section as the body lead, with a
+    small footer pointing back to the chud session id. Fall back to the
+    prompt-only body when no plan is available.
+    """
+    if state.approved_plan:
+        context = _extract_plan_context(state.approved_plan)
+        if context:
+            return f"{context}\n\n---\n*Draft PR opened by chud session `{state.id}`.*\n"
+    return _body_from_prompt(state.id, state.initial_prompt)
 
 
 async def publish_draft_prs(state: SessionState) -> list[PRResult]:
@@ -90,8 +200,8 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
     if shutil.which("gh") is None:
         return [PRResult(repo_label="", branch="", error="gh CLI not installed")]
 
-    title = _title_from_prompt(state.initial_prompt)
-    body = _body_from_prompt(state.id, state.initial_prompt)
+    title = _pick_title(state)
+    body = _pick_body(state)
     results: list[PRResult] = []
 
     for label, wt in state.attached_repos.items():

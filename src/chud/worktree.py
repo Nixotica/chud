@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +10,36 @@ from chud.types import SessionState, Worktree
 
 class WorktreeError(RuntimeError):
     pass
+
+
+_SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_SLUG_MAX_LEN = 40
+
+
+def _slugify(text: str, max_len: int = _SLUG_MAX_LEN) -> str:
+    """Make ``text`` safe for a git branch / filesystem path segment.
+
+    Lowercases, replaces runs of non-alphanumerics with ``-``, strips leading
+    and trailing ``-``, and truncates at the last ``-`` boundary that fits in
+    ``max_len`` (falling back to a hard cut). Returns ``""`` if nothing
+    survives normalization (e.g. emoji-only input) — callers decide the
+    fallback name in that case.
+    """
+    if not text:
+        return ""
+    # Take only the first line; slugs from multi-line prompts get noisy fast.
+    first_line = text.splitlines()[0]
+    normalized = _SLUG_NON_ALNUM.sub("-", first_line.lower()).strip("-")
+    if not normalized:
+        return ""
+    if len(normalized) <= max_len:
+        return normalized
+    truncated = normalized[:max_len]
+    # Prefer to cut on a hyphen boundary so we don't slice a word in half.
+    last_hyphen = truncated.rfind("-")
+    if last_hyphen >= max_len // 2:
+        truncated = truncated[:last_hyphen]
+    return truncated.strip("-") or normalized[:max_len]
 
 
 def is_git_repo(path: Path) -> bool:
@@ -61,7 +92,8 @@ class WorktreeManager:
             i += 1
 
         worktree_path = self.session.workspace_dir / wt_dir_name
-        branch = f"chud/{self.session.id}"
+        slug = _slugify(self.session.initial_prompt) or "session"
+        branch = f"chud/{slug}-{self.session.id}"
 
         # if branch already exists in target repo (rare; same session attaching a repo
         # we've previously detached and re-attached), reuse it
