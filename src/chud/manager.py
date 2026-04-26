@@ -6,8 +6,10 @@ import logging
 import secrets
 from pathlib import Path
 
+from chud import pr as pr_mod
 from chud import state as state_mod
 from chud.notify import desktop_notify
+from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_options
 from chud.session import AgentSession
 from chud.types import Event, EventKind, SessionState, SessionStatus
 from chud.worktree import WorktreeManager, is_git_repo
@@ -29,6 +31,11 @@ class SessionManager:
         self._subscribers: list[asyncio.Queue[Event]] = []
         self._notify_enabled: bool = True
         self._tui_focused: bool = True
+        # Sessions for which we've already fired DONE-side-effects, so re-emitted
+        # STATUS_CHANGED(DONE) events (e.g. after a notification) don't re-trigger.
+        self._done_handled: set[str] = set()
+        # Strong refs to in-flight PR-publish tasks so they aren't GC'd.
+        self._pr_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------ subscribe
 
@@ -51,10 +58,16 @@ class SessionManager:
         prompt: str,
         repo_path: Path | None = None,
         model: str | None = None,
+        options: dict[str, bool] | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
         workspace = state_mod.workspaces_root() / sid
-        st = SessionState(id=sid, workspace_dir=workspace, initial_prompt=prompt)
+        st = SessionState(
+            id=sid,
+            workspace_dir=workspace,
+            initial_prompt=prompt,
+            options=normalize_options(options),
+        )
 
         wt_mgr = WorktreeManager(st)
         if repo_path is not None:
@@ -101,16 +114,24 @@ class SessionManager:
         for sid in list(self.sessions):
             await self.kill_session(sid)
 
-    async def kill_session(self, session_id: str) -> None:
+    async def kill_session(
+        self, session_id: str, cleanup_workspace: bool = False
+    ) -> None:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
-        self.worktrees.pop(session_id, None)
+        wt_mgr = self.worktrees.pop(session_id, None)
+        self._done_handled.discard(session_id)
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         if sess is not None:
             await sess.stop()
+        if cleanup_workspace and wt_mgr is not None:
+            try:
+                wt_mgr.cleanup_workspace()
+            except Exception:
+                log.exception("cleanup_workspace failed for session %s", session_id)
         self._persist()
 
     # ------------------------------------------------------------------ event fanout
@@ -141,6 +162,8 @@ class SessionManager:
             )
             if should_notify:
                 desktop_notify("chud", f"Session {event.session_id[:6]} finished")
+            if status == SessionStatus.DONE.value:
+                await self._on_session_done(sess)
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             if self._notify_enabled and not self._tui_focused:
                 desktop_notify("chud", f"Session {event.session_id[:6]} needs input")
@@ -151,6 +174,64 @@ class SessionManager:
             self._persist()
             if self._notify_enabled and not self._tui_focused:
                 desktop_notify("chud", f"Session {event.session_id[:6]} errored")
+
+    # ------------------------------------------------------------------ DONE side-effects
+
+    async def _on_session_done(self, sess: AgentSession) -> None:
+        sid = sess.state.id
+        if sid in self._done_handled:
+            return
+        self._done_handled.add(sid)
+        opts = sess.state.options or {}
+        if opts.get(OPT_MAKE_DRAFT_PR):
+            task = asyncio.create_task(
+                self._publish_prs(sess.state), name=f"chud-pr-{sid}"
+            )
+            self._pr_tasks.add(task)
+            task.add_done_callback(self._pr_tasks.discard)
+        if opts.get(OPT_SELF_CLEANUP):
+            await self._broadcast(
+                Event(session_id=sid, kind=EventKind.CLEANUP_REQUESTED, payload={})
+            )
+
+    async def _publish_prs(self, state: SessionState) -> None:
+        try:
+            results = await pr_mod.publish_draft_prs(state)
+        except Exception as e:
+            log.exception("publish_draft_prs crashed for session %s", state.id)
+            await self._broadcast(
+                Event(
+                    session_id=state.id,
+                    kind=EventKind.PR_FAILED,
+                    payload={"repo": "", "branch": "", "error": repr(e)},
+                )
+            )
+            return
+        for r in results:
+            if r.error is None and r.url:
+                await self._broadcast(
+                    Event(
+                        session_id=state.id,
+                        kind=EventKind.PR_PUBLISHED,
+                        payload={
+                            "repo": r.repo_label,
+                            "branch": r.branch,
+                            "url": r.url,
+                        },
+                    )
+                )
+            else:
+                await self._broadcast(
+                    Event(
+                        session_id=state.id,
+                        kind=EventKind.PR_FAILED,
+                        payload={
+                            "repo": r.repo_label,
+                            "branch": r.branch,
+                            "error": r.error or "unknown error",
+                        },
+                    )
+                )
 
     # ------------------------------------------------------------------ persistence
 
