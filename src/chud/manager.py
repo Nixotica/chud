@@ -231,8 +231,32 @@ class SessionManager:
                 )
             )
             return
+        wt_mgr = self.worktrees.get(state.id)
+        any_discarded = False
         for r in results:
-            if r.error is None and r.url:
+            if r.discarded:
+                # Branch is genuinely empty (clean worktree, no commits ahead
+                # of base). Drop the worktree + branch ref silently — no
+                # PR_FAILED toast — so unused multi-repo attachments and
+                # plan-only sessions don't spam the UI.
+                if wt_mgr is not None and r.repo_label:
+                    try:
+                        wt_mgr.discard_empty_branch(r.repo_label)
+                        any_discarded = True
+                    except Exception:
+                        log.exception(
+                            "discard_empty_branch failed for %s in session %s",
+                            r.repo_label,
+                            state.id,
+                        )
+                await self._broadcast(
+                    Event(
+                        session_id=state.id,
+                        kind=EventKind.WORKTREE_DISCARDED,
+                        payload={"repo": r.repo_label, "branch": r.branch},
+                    )
+                )
+            elif r.error is None and r.url:
                 await self._broadcast(
                     Event(
                         session_id=state.id,
@@ -256,6 +280,10 @@ class SessionManager:
                         },
                     )
                 )
+        # discard_empty_branch mutates state.attached_repos — persist so the
+        # on-disk session record reflects the now-detached worktrees.
+        if any_discarded:
+            self._persist()
 
     # ------------------------------------------------------------------ persistence
 

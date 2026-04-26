@@ -138,6 +138,51 @@ def test_detach_repo_with_dirty_worktree_requires_force(tmp_path: Path):
     assert not wt.worktree_path.exists()
 
 
+def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
+    """Empty branch → worktree gone + ``chud/...`` branch ref deleted in origin."""
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
+    mgr = WorktreeManager(session)
+    wt = mgr.attach_repo(repo)
+    assert wt.worktree_path.exists()
+    # Sanity: the branch was just created in the origin.
+    list_before = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", wt.branch],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert wt.branch in list_before.stdout
+
+    mgr.discard_empty_branch(str(repo))
+
+    # (a) worktree path gone
+    assert not wt.worktree_path.exists()
+    # (b) branch ref gone from origin
+    list_after = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", wt.branch],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert wt.branch not in list_after.stdout
+    # (c) attached_repos entry removed
+    assert str(repo) not in session.attached_repos
+
+
+def test_discard_empty_branch_no_op_for_unknown_repo(tmp_path: Path):
+    """Discarding a repo that isn't attached is a silent no-op."""
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
+    mgr = WorktreeManager(session)
+    # Should not raise.
+    mgr.discard_empty_branch("/does/not/exist")
+
+
 def test_slugify_basic():
     assert _slugify("Add auth feature") == "add-auth-feature"
 

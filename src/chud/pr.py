@@ -42,6 +42,7 @@ class PRResult:
     branch: str
     url: str | None = None
     error: str | None = None
+    discarded: bool = False
 
 
 def _no_prompt_env() -> dict[str, str]:
@@ -110,6 +111,47 @@ async def _default_branch(repo_path: Path) -> str:
     if rc == 0 and out:
         return out
     return "main"
+
+
+async def _is_dirty(worktree: Path) -> bool:
+    """Return True iff ``worktree`` has any tracked changes or untracked files.
+
+    Uses ``git status --porcelain``, which prints one line per modified or
+    untracked path and nothing at all on a clean tree. A non-zero git exit
+    is treated as "not dirty" so the caller falls through to the existing
+    rev-list step, where the real failure surfaces with a useful message.
+    """
+    rc, out, _ = await _run(["git", "status", "--porcelain"], cwd=worktree)
+    if rc != 0:
+        return False
+    return bool(out.strip())
+
+
+async def _auto_commit(
+    worktree: Path, title: str, body: str
+) -> tuple[bool, str]:
+    """Stage and commit every change in ``worktree`` under one chud commit.
+
+    The Claude SDK in ``acceptEdits`` mode edits files but never commits, so
+    a session can finish with the agent's work sitting uncommitted. Without
+    this helper, ``publish_draft_prs`` would see ``0`` commits ahead of base
+    and discard the worktree as "abandoned" — losing the agent's work.
+
+    Returns ``(ok, err_text)``. On failure, ``err_text`` carries the git
+    stderr (e.g. "Please tell me who you are" when ``user.email`` is unset,
+    or a pre-commit hook's rejection). Author identity is deferred to the
+    user's local git config — fabricating a chud bot identity would silently
+    make commits the user can't push under their own credentials.
+    """
+    rc, _, err = await _run(["git", "add", "-A"], cwd=worktree)
+    if rc != 0:
+        return False, err or "git add failed"
+    rc, _, err = await _run(
+        ["git", "commit", "-m", title, "-m", body], cwd=worktree
+    )
+    if rc != 0:
+        return False, err or "git commit failed"
+    return True, ""
 
 
 # Match a top-level "# heading" line (single hash, not ## or more). DOTALL is
@@ -211,6 +253,22 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
 
         base = await _default_branch(origin)
 
+        # Auto-commit any uncommitted edits the agent left behind. This must
+        # happen before the rev-list step, because the commit changes the
+        # rev-list answer — and the whole point is that an agent who edited
+        # files but didn't commit shouldn't look like an "abandoned" branch.
+        if await _is_dirty(worktree):
+            ok, err = await _auto_commit(worktree, title, body)
+            if not ok:
+                results.append(
+                    PRResult(
+                        repo_label=label,
+                        branch=branch,
+                        error=f"auto-commit failed: {err}",
+                    )
+                )
+                continue
+
         rc, count, err = await _run(
             ["git", "rev-list", "--count", f"origin/{base}..HEAD"],
             cwd=worktree,
@@ -225,12 +283,11 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
             )
             continue
         if count.strip() == "0":
+            # We just confirmed clean (no dirty edits) AND no commits ahead
+            # of base — this branch is genuinely abandoned. Mark it for
+            # silent cleanup rather than emitting a noisy PR_FAILED toast.
             results.append(
-                PRResult(
-                    repo_label=label,
-                    branch=branch,
-                    error=f"no commits on {branch} ahead of origin/{base}",
-                )
+                PRResult(repo_label=label, branch=branch, discarded=True)
             )
             continue
 

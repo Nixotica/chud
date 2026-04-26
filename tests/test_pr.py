@@ -153,8 +153,8 @@ async def test_publish_draft_prs_when_gh_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_publish_draft_prs_skips_when_no_commits(monkeypatch):
-    """rev-list reports 0 commits → skip push, return descriptive error."""
+async def test_publish_draft_prs_discards_clean_empty_branch(monkeypatch):
+    """Clean worktree + 0 commits → discarded=True, no error, no push/PR."""
     monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
 
     calls: list[list[str]] = []
@@ -163,6 +163,8 @@ async def test_publish_draft_prs_skips_when_no_commits(monkeypatch):
         calls.append(cmd)
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""  # clean
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return 0, "0", ""
         # Anything else means we accidentally tried to push or open a PR.
@@ -173,11 +175,118 @@ async def test_publish_draft_prs_skips_when_no_commits(monkeypatch):
     results = await pr_mod.publish_draft_prs(_state_with_one_repo())
     assert len(results) == 1
     assert results[0].url is None
-    assert results[0].error is not None
-    assert "no commits" in results[0].error
-    # Verify we never attempted a push or PR creation.
+    assert results[0].error is None
+    assert results[0].discarded is True
+    # No commit, no push, no gh.
+    assert not any(c[:2] == ["git", "commit"] for c in calls)
     assert not any(c[:2] == ["git", "push"] for c in calls)
     assert not any(c[:1] == ["gh"] for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_prs_auto_commits_dirty_worktree(monkeypatch):
+    """Dirty worktree → auto-commit fires, then push + PR open succeed."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    calls: list[list[str]] = []
+
+    async def fake_run(cmd, cwd=None):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M src/foo.py\n?? src/new.py", ""  # dirty
+        if cmd[:3] == ["git", "add", "-A"]:
+            return 0, "", ""
+        if cmd[:2] == ["git", "commit"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            # After auto-commit there's exactly one new commit ahead of base.
+            return 0, "1", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/7", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_one_repo())
+    assert len(results) == 1
+    assert results[0].error is None
+    assert results[0].url == "https://github.com/x/y/pull/7"
+    assert results[0].discarded is False
+    # Auto-commit ran, with a non-empty title as the commit subject.
+    add_calls = [c for c in calls if c[:3] == ["git", "add", "-A"]]
+    commit_calls = [c for c in calls if c[:2] == ["git", "commit"]]
+    assert len(add_calls) == 1
+    assert len(commit_calls) == 1
+    # Subject derived from prompt fallback ("add a foo"); not empty.
+    assert "-m" in commit_calls[0]
+    msg_idx = commit_calls[0].index("-m") + 1
+    assert commit_calls[0][msg_idx] == "add a foo"
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_prs_auto_commit_uses_plan_title(monkeypatch):
+    """When an approved plan exists, its H1 becomes the commit subject."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    captured_subject: dict[str, str] = {}
+
+    async def fake_run(cmd, cwd=None):
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M f", ""
+        if cmd[:3] == ["git", "add", "-A"]:
+            return 0, "", ""
+        if cmd[:2] == ["git", "commit"]:
+            captured_subject["v"] = cmd[cmd.index("-m") + 1]
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return 0, "1", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/8", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    state = _state_with_one_repo(
+        approved_plan="# Fix the parser\n\n## Context\n\nIt was wrong.\n"
+    )
+    results = await pr_mod.publish_draft_prs(state)
+    assert results[0].error is None
+    assert captured_subject["v"] == "Fix the parser"
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_prs_auto_commit_failure_surfaces_as_error(monkeypatch):
+    """A pre-commit hook (or any commit failure) becomes a PR_FAILED error."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    async def fake_run(cmd, cwd=None):
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M f", ""
+        if cmd[:3] == ["git", "add", "-A"]:
+            return 0, "", ""
+        if cmd[:2] == ["git", "commit"]:
+            return 1, "", "pre-commit hook rejected: lint failed"
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_one_repo())
+    assert len(results) == 1
+    assert results[0].url is None
+    assert results[0].discarded is False
+    assert results[0].error is not None
+    assert results[0].error.startswith("auto-commit failed:")
+    assert "pre-commit hook rejected" in results[0].error
 
 
 @pytest.mark.asyncio
@@ -187,6 +296,8 @@ async def test_publish_draft_prs_happy_path(monkeypatch):
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""  # clean — agent already committed
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return 0, "3", ""
         if cmd[:3] == ["git", "push", "-u"]:
@@ -211,6 +322,8 @@ async def test_publish_draft_prs_reports_push_failure(monkeypatch):
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "rev-list", "--count"]:
             return 0, "1", ""
         if cmd[:3] == ["git", "push", "-u"]:
