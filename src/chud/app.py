@@ -90,8 +90,6 @@ class ChudApp(App[None]):
     async def on_mount(self) -> None:
         self.manager.set_focus(True)
         self.query_one(SessionView).show_session(None)
-        # Focus the sidebar so up/down arrows (and j/k) navigate sessions
-        # immediately on launch, without the user having to Tab into the list.
         self.query_one(SessionListView).list_view.focus()
         # subscribe and drain events in a background worker
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
