@@ -5,6 +5,7 @@ from typing import Any
 
 from rich.markup import escape
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
@@ -31,6 +32,10 @@ class SessionView(Vertical):
     }
     """
 
+    BINDINGS = [
+        Binding("escape", "focus_transcript", "Focus transcript", show=False),
+    ]
+
     def compose(self) -> ComposeResult:
         yield Static("(no session selected)", id="header")
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True, auto_scroll=True)
@@ -47,6 +52,15 @@ class SessionView(Vertical):
     @property
     def input(self) -> Input:
         return self.query_one("#input", Input)
+
+    def action_focus_transcript(self) -> None:
+        """Move focus from the input back up to the transcript.
+
+        No-op when no session is selected (the input is disabled in that case).
+        """
+        if self.input.disabled:
+            return
+        self.transcript.focus()
 
     def show_session(self, state: SessionState | None) -> None:
         self.transcript.clear()
