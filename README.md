@@ -1,5 +1,7 @@
 # chud
 
+![status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)
+
 A terminal UI for orchestrating multiple Claude Code agents in parallel.
 
 Each agent starts in plan mode, surfaces its plan for approval, then continues in the background with auto-accepted edits inside a git worktree. The TUI shows live transcripts and notifies you when an agent needs input or finishes.
