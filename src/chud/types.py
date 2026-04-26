@@ -111,6 +111,7 @@ class EventKind(str, Enum):
     TRANSCRIPT_APPENDED = "transcript_appended"
     PLAN_PROPOSED = "plan_proposed"
     NEEDS_USER_INPUT = "needs_user_input"
+    QUESTION_ASKED = "question_asked"
     REPO_ATTACHED = "repo_attached"
     UNKNOWN_MESSAGE = "unknown_message"
     ERROR = "error"

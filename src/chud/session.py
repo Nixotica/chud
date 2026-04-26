@@ -58,6 +58,10 @@ class AgentSession:
             None
         )
         self._pending_plan_text: str | None = None
+        self._question_decision: (
+            asyncio.Future[PermissionResultAllow | PermissionResultDeny] | None
+        ) = None
+        self._pending_question_input: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -105,6 +109,13 @@ class AgentSession:
             )
         self._plan_decision = None
         self._pending_plan_text = None
+
+        if self._question_decision is not None and not self._question_decision.done():
+            self._question_decision.set_result(
+                PermissionResultDeny(message="Session stopped.")
+            )
+        self._question_decision = None
+        self._pending_question_input = None
 
         if self._client is not None:
             with contextlib.suppress(Exception):
@@ -157,6 +168,23 @@ class AgentSession:
         self._pending_plan_text = None
         await self._set_status(SessionStatus.PLANNING)
 
+    async def answer_question(self, answer_text: str) -> None:
+        """Resolve a pending AskUserQuestion tool call with the user's answer.
+
+        The answer is delivered to the model via PermissionResultDeny.message —
+        the same SDK channel reject_plan() uses to ferry free-text feedback into
+        the agent. From the model's POV this reads as the tool's response.
+        """
+        if self._question_decision is None or self._question_decision.done():
+            log.warning(
+                "answer_question called with no pending decision (session %s)", self.state.id
+            )
+            return
+        self._question_decision.set_result(PermissionResultDeny(message=answer_text))
+        self._question_decision = None
+        self._pending_question_input = None
+        await self._set_status(SessionStatus.EXECUTING)
+
     # ------------------------------------------------------------------ SDK callbacks
 
     async def _on_tool_request(
@@ -173,6 +201,19 @@ class AgentSession:
             await self._set_status(SessionStatus.AWAITING_PLAN_APPROVAL)
             await self._emit(EventKind.PLAN_PROPOSED, {"plan": plan_text})
             return await self._plan_decision
+
+        if tool_name == "AskUserQuestion":
+            # AskUserQuestion is a Claude Code harness builtin — the SDK has no
+            # implementation, so allowing it through hangs the agent. Intercept
+            # it like ExitPlanMode: stash the input, surface a modal via the
+            # event queue, and wait for answer_question() to resolve the future
+            # with a Deny whose .message carries the user's selection back to
+            # the model.
+            self._pending_question_input = dict(tool_input)
+            self._question_decision = asyncio.get_event_loop().create_future()
+            await self._set_status(SessionStatus.AWAITING_USER)
+            await self._emit(EventKind.QUESTION_ASKED, {"input": dict(tool_input)})
+            return await self._question_decision
 
         # Default: allow. Future iterations may add a deny-list or interactive gating
         # for non-plan tools (e.g., destructive Bash). v1 trusts acceptEdits.
