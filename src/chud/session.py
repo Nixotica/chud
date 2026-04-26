@@ -65,8 +65,15 @@ class AgentSession:
 
         self.state.initial_prompt = prompt
 
+        # If exactly one repo is attached, run the agent inside that worktree so
+        # its tools see a real git checkout. With 0 or 2+ repos, fall back to
+        # the workspace root: 0 repos = scratch dir for non-repo work; 2+ repos
+        # = parent of all worktree subdirs so the agent can `cd` between them.
+        attached = list(self.state.attached_repos.values())
+        cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
+
         options = ClaudeAgentOptions(
-            cwd=self.state.workspace_dir,
+            cwd=cwd,
             permission_mode="plan",
             can_use_tool=self._on_tool_request,
             hooks={
@@ -129,6 +136,10 @@ class AgentSession:
             return
         assert self._client is not None
         await self._client.set_permission_mode("acceptEdits")
+        # Persist the approved plan text so downstream consumers (PR title/body)
+        # can read it later, including across TUI restarts.
+        if self._pending_plan_text:
+            self.state.approved_plan = self._pending_plan_text
         self._plan_decision.set_result(PermissionResultAllow())
         self._plan_decision = None
         self._pending_plan_text = None

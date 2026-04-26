@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from chud.types import SessionState
-from chud.worktree import WorktreeError, WorktreeManager, is_git_repo
+from chud.worktree import WorktreeError, WorktreeManager, _slugify, is_git_repo
 
 
 def _init_repo(path: Path) -> None:
@@ -35,7 +35,7 @@ def test_attach_repo_creates_worktree(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
     workspace = tmp_path / "ws"
-    session = SessionState(id="sess1", workspace_dir=workspace)
+    session = SessionState(id="sess1", workspace_dir=workspace, initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt = mgr.attach_repo(repo)
@@ -43,13 +43,15 @@ def test_attach_repo_creates_worktree(tmp_path: Path):
     assert wt.worktree_path == workspace / "myrepo"
     assert wt.worktree_path.exists()
     assert (wt.worktree_path / "README").read_text() == "hi"
-    assert wt.branch == "chud/sess1"
+    assert wt.branch == "chud/add-foo-sess1"
 
 
 def test_attach_repo_idempotent(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws")
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
     mgr = WorktreeManager(session)
 
     wt1 = mgr.attach_repo(repo)
@@ -63,7 +65,9 @@ def test_attach_two_repos_same_basename_disambiguated(tmp_path: Path):
     b = tmp_path / "org-b" / "api"
     _init_repo(a)
     _init_repo(b)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws")
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
     mgr = WorktreeManager(session)
 
     wt_a = mgr.attach_repo(a)
@@ -75,10 +79,39 @@ def test_attach_two_repos_same_basename_disambiguated(tmp_path: Path):
     assert wt_b.worktree_path.exists()
 
 
+def test_attach_repo_branch_falls_back_when_prompt_empty(tmp_path: Path):
+    """Empty prompt → branch uses the ``session`` literal as the slug."""
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="")
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "chud/session-sess1"
+
+
+def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(
+        id="sess1",
+        workspace_dir=tmp_path / "ws",
+        initial_prompt="Fix bug: 🚀 in API!",
+    )
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "chud/fix-bug-in-api-sess1"
+
+
 def test_detach_repo_removes_worktree(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws")
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
@@ -91,7 +124,9 @@ def test_detach_repo_removes_worktree(tmp_path: Path):
 def test_detach_repo_with_dirty_worktree_requires_force(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws")
+    session = SessionState(
+        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
+    )
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     (wt.worktree_path / "dirty.txt").write_text("uncommitted")
@@ -101,3 +136,28 @@ def test_detach_repo_with_dirty_worktree_requires_force(tmp_path: Path):
 
     mgr.detach_repo(str(repo), force=True)
     assert not wt.worktree_path.exists()
+
+
+def test_slugify_basic():
+    assert _slugify("Add auth feature") == "add-auth-feature"
+
+
+def test_slugify_strips_punctuation_and_unicode():
+    assert _slugify("Fix bug: 🚀 in API!") == "fix-bug-in-api"
+
+
+def test_slugify_returns_empty_for_emoji_only():
+    assert _slugify("🚀🚀🚀") == ""
+
+
+def test_slugify_only_uses_first_line():
+    assert _slugify("first line\nsecond line should be ignored") == "first-line"
+
+
+def test_slugify_truncates_at_hyphen_boundary():
+    out = _slugify("one two three four five six seven eight nine ten eleven twelve")
+    # max_len default is 40; result should not exceed it and should not end on a partial word.
+    assert len(out) <= 40
+    assert not out.endswith("-")
+    # Should end on a complete word boundary, not mid-word.
+    assert all(part for part in out.split("-"))

@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
-from chud.options import SESSION_OPTIONS, default_options
+from chud.options import SESSION_OPTIONS
+from chud.state import get_recent_repo_paths, save_user_config, user_default_options
 
 
 @dataclass
 class NewSessionResult:
     repo_path: Path | None
     prompt: str
-    options: dict[str, bool] = field(default_factory=default_options)
+    options: dict[str, bool] = field(default_factory=user_default_options)
 
 
 def _detect_cwd_repo() -> str:
@@ -36,6 +42,18 @@ def _detect_cwd_repo() -> str:
     return ""
 
 
+def _safe_recent_repos() -> list[str]:
+    """Return recent repo paths for autocomplete, swallowing any load errors.
+
+    The modal must open even if `sessions.json` is missing or malformed, so we
+    fall back to an empty list and let the suggester silently no-op.
+    """
+    try:
+        return get_recent_repo_paths()
+    except Exception:
+        return []
+
+
 class NewSessionModal(ModalScreen[NewSessionResult | None]):
     """Prompt user for an optional repo path + an initial prompt for a new session."""
 
@@ -46,6 +64,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     NewSessionModal > Vertical {
         width: 90%;
         max-width: 100;
+        height: 32;
         height: 32;
         background: $surface;
         border: round $accent;
@@ -59,6 +78,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         margin-bottom: 1;
     }
     NewSessionModal TextArea {
+        height: 8;
         height: 8;
         margin-bottom: 1;
     }
@@ -95,36 +115,58 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("f2", "start", "Start", priority=True),
+        Binding("escape", "cancel", "Cancel"),
+        Binding("f2", "start", "Start", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("[bold]New session[/bold]")
-            yield Label("Repo path (optional, leave blank for none):")
-            yield Input(value=_detect_cwd_repo(), placeholder="/path/to/repo", id="repo")
+            yield Label("Repo path (optional — Tab/→ to accept suggestion):")
+            yield Input(
+                value=_detect_cwd_repo(),
+                placeholder="/path/to/repo",
+                id="repo",
+                suggester=SuggestFromList(_safe_recent_repos(), case_sensitive=True),
+            )
             yield Label("Initial prompt:")
             yield TextArea("", id="prompt")
+            defaults = user_default_options()
             with VerticalScroll(id="options-group"):
                 yield Label("Options")
                 for opt in SESSION_OPTIONS:
                     yield Checkbox(
                         opt.label,
-                        value=opt.default,
+                        value=defaults[opt.id],
                         id=f"opt-{opt.id}",
                         tooltip=opt.description,
                     )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
+                yield Button("Save as defaults", id="save-defaults")
                 yield Button("Start (F2)", id="start", variant="success")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
+        elif event.button.id == "save-defaults":
+            self._save_defaults()
         elif event.button.id == "start":
             self._submit()
 
+    def _save_defaults(self) -> None:
+        options = {
+            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
+            for opt in SESSION_OPTIONS
+        }
+        save_user_config(options)
+        self.app.notify("Saved as defaults.")
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_start(self) -> None:
+        self._submit()
 
     def action_start(self) -> None:
         self._submit()
@@ -138,6 +180,13 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         if not prompt:
             return
         repo_path = Path(repo_str).expanduser() if repo_str else None
+        options = {
+            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
+            for opt in SESSION_OPTIONS
+        }
+        self.dismiss(
+            NewSessionResult(repo_path=repo_path, prompt=prompt, options=options)
+        )
         options = {
             opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
             for opt in SESSION_OPTIONS
