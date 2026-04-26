@@ -7,6 +7,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
+from chud.markup import TextHeading
+
 
 class AttachRepoModal(ModalScreen[Path | None]):
     DEFAULT_CSS = """
@@ -34,7 +36,7 @@ class AttachRepoModal(ModalScreen[Path | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("[bold]Attach a repo to this session[/bold]")
+            yield Static(TextHeading("Attach a repo to this session"))
             yield Label("Repo path:")
             yield Input(placeholder="/path/to/repo", id="repo")
             with Horizontal():

@@ -14,6 +14,7 @@ from textual.widgets import Footer, Header, Input, ListView
 
 from chud import state as state_mod
 from chud.manager import SessionManager
+from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
@@ -298,7 +299,7 @@ class ChudApp(App[None]):
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
             view.transcript.write(
-                f"[bold green]+ draft PR:[/bold green] {repo} → {url}"
+                f"{TextSuccess('+ draft PR:')} {repo} → {url}"
             )
         elif event.kind == EventKind.PR_FAILED:
             err = event.payload.get("error", "")
@@ -306,16 +307,17 @@ class ChudApp(App[None]):
             self.notify(f"PR failed ({repo}): {err}", severity="error")
             view = self.query_one(SessionView)
             view.transcript.write(
-                f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
+                f"{TextError('! PR failed:')} {repo or '(session)'}: {err}"
             )
         elif event.kind == EventKind.WORKTREE_DISCARDED:
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
             view = self.query_one(SessionView)
             view.transcript.write(
-                f"[dim]· discarded empty branch {branch}"
-                + (f" ({repo})" if repo else "")
-                + "[/dim]"
+                TextMuted(
+                    f"· discarded empty branch {branch}"
+                    + (f" ({repo})" if repo else "")
+                )
             )
 
     # ------------------------------------------------------------------ prompt queue

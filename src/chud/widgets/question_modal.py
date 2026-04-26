@@ -9,6 +9,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
 
+from chud.markup import TextHeading, TextMuted
+
 
 class QuestionModal(ModalScreen[str | None]):
     """Render an AskUserQuestion tool call and collect the user's answer.
@@ -83,21 +85,21 @@ class QuestionModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold]Question from session {self.session_id[:8]}[/bold]",
+                TextHeading(f"Question from session {self.session_id[:8]}"),
                 id="question-title",
             )
             with VerticalScroll():
                 for idx, q in enumerate(self.questions):
                     header = str(q.get("header") or "").strip()
                     if header:
-                        yield Static(f"[bold]{header}[/bold]", classes="question-header")
+                        yield Static(TextHeading(header), classes="question-header")
                     yield Static(
                         str(q.get("question") or "(no question text)"),
                         classes="question-text",
                     )
                     raw = q.get("_raw")
                     if raw:
-                        yield Static(f"[dim]{raw}[/dim]")
+                        yield Static(TextMuted(str(raw)))
                     options = q.get("options") or []
                     multi = bool(q.get("multiSelect"))
                     if not options:
@@ -188,6 +190,6 @@ def _format_option(opt: Any) -> str:
         label = str(opt.get("label") or opt.get("value") or opt)
         desc = str(opt.get("description") or "").strip()
         if desc:
-            return f"{label} [dim]— {desc}[/dim]"
+            return f"{label} {TextMuted(f'— {desc}')}"
         return label
     return str(opt)

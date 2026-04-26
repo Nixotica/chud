@@ -3,11 +3,22 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
+from chud.markup import (
+    TextAttached,
+    TextError,
+    TextHeading,
+    TextMuted,
+    TextPlanBanner,
+    TextPrompt,
+    TextStatus,
+    TextStatusChange,
+    TextToolName,
+    escape,
+)
 from chud.types import Event, EventKind, SessionState
 
 
@@ -64,7 +75,7 @@ class SessionView(Vertical):
         repo_names = sorted(wt.repo_path.name for wt in state.attached_repos.values())
         repos = ", ".join(repo_names) or "(no repos)"
         self.header.update(
-            f"[bold]{state.id[:8]}[/bold]  status=[cyan]{state.status.value}[/cyan]  "
+            f"{TextHeading(state.id[:8])}  status={TextStatus(state.status.value)}  "
             f"repos: {repos}"
         )
 
@@ -74,11 +85,14 @@ class SessionView(Vertical):
         if kind == EventKind.TRANSCRIPT_APPENDED:
             role = escape(str(p.get("role", "?")))
             if "text" in p:
-                self.transcript.write(f"[bold]{role}:[/bold] {escape(str(p['text']))}")
+                self.transcript.write(
+                    f"{TextHeading(f'{role}:')} {escape(str(p['text']))}"
+                )
             elif "tool_use" in p:
                 tu = p["tool_use"]
                 self.transcript.write(
-                    f"[dim]{role} → tool:[/dim] [yellow]{escape(str(tu.get('name')))}[/yellow] "
+                    f"{TextMuted(f'{role} → tool:')} "
+                    f"{TextToolName(escape(str(tu.get('name'))))} "
                     f"{escape(_short_json(tu.get('input')))}"
                 )
             # Other transcript shapes (raw SystemMessage init blobs, UserMessage
@@ -87,11 +101,11 @@ class SessionView(Vertical):
             # and for a future verbose mode.
         elif kind == EventKind.STATUS_CHANGED:
             self.transcript.write(
-                f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]"
+                TextStatusChange(f"→ {escape(str(p.get('status')))}")
             )
         elif kind == EventKind.PLAN_PROPOSED:
             self.transcript.write(
-                "[bold magenta]── Plan proposed (modal will open) ──[/bold magenta]"
+                TextPlanBanner("── Plan proposed (modal will open) ──")
             )
         elif kind == EventKind.QUESTION_ASKED:
             qs = (p.get("input") or {}).get("questions") or []
@@ -99,23 +113,27 @@ class SessionView(Vertical):
             if qs and isinstance(qs[0], dict):
                 first = str(qs[0].get("question") or qs[0].get("header") or "")
             preview = escape(first[:120]) if first else ""
-            line = "[bold yellow]? agent asked a question[/bold yellow]"
+            line = TextPrompt("? agent asked a question")
             if preview:
                 line = f"{line}: {preview}"
             self.transcript.write(line)
         elif kind == EventKind.NEEDS_USER_INPUT:
             msg = p.get("message") or p.get("reason", "agent waiting")
-            self.transcript.write(f"[bold red]? agent needs input: {escape(str(msg))}[/bold red]")
+            self.transcript.write(
+                TextError(f"? agent needs input: {escape(str(msg))}")
+            )
         elif kind == EventKind.REPO_ATTACHED:
             self.transcript.write(
-                f"[blue]+ attached:[/blue] {escape(str(p.get('repo')))} → "
+                f"{TextAttached('+ attached:')} {escape(str(p.get('repo')))} → "
                 f"{escape(str(p.get('worktree')))}"
             )
         elif kind == EventKind.UNKNOWN_MESSAGE:
             # Intentionally not rendered — kept in the event log + chud.log only.
             pass
         elif kind == EventKind.ERROR:
-            self.transcript.write(f"[bold red]ERROR:[/bold red] {escape(str(p.get('error')))}")
+            self.transcript.write(
+                f"{TextError('ERROR:')} {escape(str(p.get('error')))}"
+            )
 
 
 def _short_json(obj: Any, limit: int = 120) -> str:

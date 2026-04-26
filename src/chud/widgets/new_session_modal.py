@@ -11,6 +11,7 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
+from chud.markup import TextHeading
 from chud.options import SESSION_OPTIONS
 from chud.state import get_recent_repo_paths, save_user_config, user_default_options
 
@@ -113,7 +114,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("[bold]New session[/bold]")
+            yield Static(TextHeading("New session"))
             yield Label("Repo path (optional — Tab/→ to accept suggestion):")
             yield Input(
                 value=_detect_cwd_repo(),

@@ -5,6 +5,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from chud.markup import TextDanger, TextHeading, TextMuted, TextPath
 from chud.types import SessionState
 
 
@@ -61,23 +62,23 @@ class CleanupConfirmationModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold]Clean up session {self.state.id[:8]}?[/bold]",
+                TextHeading(f"Clean up session {self.state.id[:8]}?"),
                 id="title",
             )
             with VerticalScroll():
                 yield Static(
-                    "This will [red]permanently delete[/red] the workspace "
+                    f"This will {TextDanger('permanently delete')} the workspace "
                     "directory and remove all attached worktrees:"
                 )
-                yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
+                yield Static(f"  • workspace: {TextPath(str(self.state.workspace_dir))}")
                 if self.state.attached_repos:
                     for wt in self.state.attached_repos.values():
                         yield Static(
-                            f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
-                            f"[dim](branch {wt.branch})[/dim]"
+                            f"  • worktree:  {TextPath(str(wt.worktree_path))}  "
+                            f"{TextMuted(f'(branch {wt.branch})')}"
                         )
                 else:
-                    yield Static("  [dim](no attached repos)[/dim]")
+                    yield Static(f"  {TextMuted('(no attached repos)')}")
                 yield Static(
                     "\nUnpushed commits on the chud branch will be lost unless "
                     "you also enabled the draft-PR option."
