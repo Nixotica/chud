@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -89,6 +90,7 @@ class ChudApp(App[None]):
     async def on_mount(self) -> None:
         self.manager.set_focus(True)
         self.query_one(SessionView).show_session(None)
+        self.query_one(SessionListView).list_view.focus()
         # subscribe and drain events in a background worker
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
 
@@ -157,6 +159,14 @@ class ChudApp(App[None]):
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if isinstance(event.item, SessionRow):
             self._select_session(event.item.session_id)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Enter on a sidebar row drops focus into the message input."""
+        if isinstance(event.item, SessionRow):
+            self._select_session(event.item.session_id)
+            # Best-effort focus; mirrors the pattern in _show_input_focus.
+            with contextlib.suppress(Exception):
+                self.query_one(SessionView).input.focus()
 
     def _select_session(self, sid: str) -> None:
         self._selected_session_id = sid
