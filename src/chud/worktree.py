@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from chud.types import SessionState, Worktree
+
+log = logging.getLogger(__name__)
 
 
 class WorktreeError(RuntimeError):
@@ -82,7 +85,6 @@ class WorktreeManager:
         if repo_key in self.session.attached_repos:
             return self.session.attached_repos[repo_key]
 
-        # disambiguate dir name if another repo with same basename is already attached
         basename = toplevel.name
         wt_dir_name = basename
         i = 2
@@ -95,8 +97,6 @@ class WorktreeManager:
         slug = _slugify(self.session.initial_prompt) or "session"
         branch = f"chud/{slug}-{self.session.id}"
 
-        # if branch already exists in target repo (rare; same session attaching a repo
-        # we've previously detached and re-attached), reuse it
         branch_exists = (
             subprocess.run(
                 ["git", "-C", str(toplevel), "rev-parse", "--verify", branch],
@@ -137,6 +137,37 @@ class WorktreeManager:
             )
 
         del self.session.attached_repos[repo_key]
+
+    def discard_empty_branch(self, repo_key: str) -> None:
+        """Drop a chud branch that never received a commit.
+
+        For worktrees where the agent did no work (or where a session was
+        cancelled), the ``chud/<slug>-<sid>`` branch ref accumulates in the
+        origin repo with no commits behind it. ``cleanup_workspace`` removes
+        the worktree but leaves the branch ref dangling, so call this when
+        you know the branch is empty: it force-detaches the worktree (so
+        ``git branch -D`` won't complain that it's checked out), then deletes
+        the branch ref. Best-effort on the branch deletion — anything other
+        than a "not found" failure is logged but swallowed so a stuck branch
+        ref doesn't block session cleanup.
+        """
+        wt = self.session.attached_repos.get(repo_key)
+        if wt is None:
+            return
+        repo_path = wt.repo_path
+        branch = wt.branch
+        self.detach_repo(repo_key, force=True)
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "-D", branch],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "not found" not in stderr.lower():
+                log.warning(
+                    "git branch -D %s failed in %s: %s", branch, repo_path, stderr
+                )
 
     def cleanup_workspace(self) -> None:
         """Remove all attached worktrees and the workspace dir. Destructive."""

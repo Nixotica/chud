@@ -117,6 +117,7 @@ class EventKind(str, Enum):
     CLEANUP_REQUESTED = "cleanup_requested"
     PR_PUBLISHED = "pr_published"
     PR_FAILED = "pr_failed"
+    WORKTREE_DISCARDED = "worktree_discarded"
 
 
 @dataclass

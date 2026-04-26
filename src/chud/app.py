@@ -274,6 +274,15 @@ class ChudApp(App[None]):
             view.transcript.write(
                 f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
             )
+        elif event.kind == EventKind.WORKTREE_DISCARDED:
+            branch = event.payload.get("branch", "")
+            repo = event.payload.get("repo", "")
+            view = self.query_one(SessionView)
+            view.transcript.write(
+                f"[dim]· discarded empty branch {branch}"
+                + (f" ({repo})" if repo else "")
+                + "[/dim]"
+            )
 
     # ------------------------------------------------------------------ prompt queue
 
