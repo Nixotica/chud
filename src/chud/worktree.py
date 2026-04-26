@@ -105,6 +105,16 @@ class WorktreeManager:
             == 0
         )
 
+        # Drop stale "prunable" worktree entries (directory gone, .git/worktrees
+        # metadata still present) before adding. Without this, a previous chud
+        # session whose workspace was rm'd outside `git worktree remove` would
+        # keep the branch "checked out" at a missing path and `git worktree
+        # add` would fail with "<branch> is already checked out at <path>".
+        subprocess.run(
+            ["git", "-C", str(toplevel), "worktree", "prune"],
+            capture_output=True,
+        )
+
         cmd = ["git", "-C", str(toplevel), "worktree", "add"]
         if branch_exists:
             cmd += [str(worktree_path), branch]
