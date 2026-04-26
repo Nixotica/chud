@@ -253,10 +253,6 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
 
         base = await _default_branch(origin)
 
-        # Auto-commit any uncommitted edits the agent left behind. This must
-        # happen before the rev-list step, because the commit changes the
-        # rev-list answer — and the whole point is that an agent who edited
-        # files but didn't commit shouldn't look like an "abandoned" branch.
         if await _is_dirty(worktree):
             ok, err = await _auto_commit(worktree, title, body)
             if not ok:
@@ -283,9 +279,6 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
             )
             continue
         if count.strip() == "0":
-            # We just confirmed clean (no dirty edits) AND no commits ahead
-            # of base — this branch is genuinely abandoned. Mark it for
-            # silent cleanup rather than emitting a noisy PR_FAILED toast.
             results.append(
                 PRResult(repo_label=label, branch=branch, discarded=True)
             )

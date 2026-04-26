@@ -31,12 +31,7 @@ class SessionManager:
         self._subscribers: list[asyncio.Queue[Event]] = []
         self._notify_enabled: bool = True
         self._tui_focused: bool = True
-        # Sessions for which we've already fired DONE-side-effects, so re-emitted
-        # STATUS_CHANGED(DONE) events (e.g. after a notification) don't re-trigger.
         self._done_handled: set[str] = set()
-        # Strong refs to in-flight DONE side-effect tasks (PR publish, then
-        # optional cleanup-broadcast) keyed by session id so kill_session can
-        # cancel a session's task in O(1).
         self._pr_tasks: dict[str, asyncio.Task[None]] = {}
 
     # ------------------------------------------------------------------ subscribe
@@ -128,9 +123,6 @@ class SessionManager:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        # Cancel any in-flight DONE side-effect (PR publish + queued cleanup
-        # broadcast) before we tear down the worktree, otherwise rmtree races
-        # with git push.
         if done_task is not None and not done_task.done():
             done_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -209,9 +201,6 @@ class SessionManager:
         task.add_done_callback(lambda _t, s=sid: self._pr_tasks.pop(s, None))
 
     async def _finish_done(self, state: SessionState, request_cleanup: bool) -> None:
-        # PR publish must complete before cleanup is offered, otherwise the
-        # cleanup modal can race with the still-running git push and the user
-        # ends up with neither a worktree nor a PR.
         await self._publish_prs(state)
         if request_cleanup:
             await self._broadcast(
@@ -232,17 +221,13 @@ class SessionManager:
             )
             return
         wt_mgr = self.worktrees.get(state.id)
-        any_discarded = False
+        any_discarded_branches = False
         for r in results:
             if r.discarded:
-                # Branch is genuinely empty (clean worktree, no commits ahead
-                # of base). Drop the worktree + branch ref silently — no
-                # PR_FAILED toast — so unused multi-repo attachments and
-                # plan-only sessions don't spam the UI.
                 if wt_mgr is not None and r.repo_label:
                     try:
                         wt_mgr.discard_empty_branch(r.repo_label)
-                        any_discarded = True
+                        any_discarded_branches = True
                     except Exception:
                         log.exception(
                             "discard_empty_branch failed for %s in session %s",
@@ -280,9 +265,7 @@ class SessionManager:
                         },
                     )
                 )
-        # discard_empty_branch mutates state.attached_repos — persist so the
-        # on-disk session record reflects the now-detached worktrees.
-        if any_discarded:
+        if any_discarded_branches:
             self._persist()
 
     # ------------------------------------------------------------------ persistence

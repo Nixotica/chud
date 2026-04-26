@@ -85,7 +85,6 @@ class WorktreeManager:
         if repo_key in self.session.attached_repos:
             return self.session.attached_repos[repo_key]
 
-        # disambiguate dir name if another repo with same basename is already attached
         basename = toplevel.name
         wt_dir_name = basename
         i = 2
@@ -98,8 +97,6 @@ class WorktreeManager:
         slug = _slugify(self.session.initial_prompt) or "session"
         branch = f"chud/{slug}-{self.session.id}"
 
-        # if branch already exists in target repo (rare; same session attaching a repo
-        # we've previously detached and re-attached), reuse it
         branch_exists = (
             subprocess.run(
                 ["git", "-C", str(toplevel), "rev-parse", "--verify", branch],
@@ -159,9 +156,6 @@ class WorktreeManager:
             return
         repo_path = wt.repo_path
         branch = wt.branch
-        # Force-detach: the branch is checked out by this worktree, so a
-        # plain `git branch -D` would refuse. detach_repo also pops the
-        # entry from attached_repos.
         self.detach_repo(repo_key, force=True)
         result = subprocess.run(
             ["git", "-C", str(repo_path), "branch", "-D", branch],

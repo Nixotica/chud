@@ -275,10 +275,6 @@ class ChudApp(App[None]):
                 f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
             )
         elif event.kind == EventKind.WORKTREE_DISCARDED:
-            # Silent on purpose: a worktree the agent never touched isn't a
-            # failure, just absence of work. Drop a muted transcript line so
-            # the discard is auditable, but no notify() — this is the whole
-            # reason the discard path exists (vs the old PR_FAILED toast).
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
             view = self.query_one(SessionView)
