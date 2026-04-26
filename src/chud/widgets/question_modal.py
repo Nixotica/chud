@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -46,6 +47,29 @@ class QuestionModal(ModalScreen[str | None]):
         height: 3;
         margin-top: 1;
     }
+    QuestionModal Checkbox {
+        height: 1;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: transparent;
+    }
+    QuestionModal Checkbox:focus {
+        border: none;
+        background: $boost;
+    }
+    QuestionModal RadioSet {
+        border: none;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+    }
+    QuestionModal RadioSet:focus {
+        background: $boost;
+    }
+    QuestionModal RadioButton:focus {
+        background: $boost;
+    }
     QuestionModal Horizontal {
         height: 3;
         align: right middle;
@@ -86,7 +110,9 @@ class QuestionModal(ModalScreen[str | None]):
                 f"[bold]Question from session {self.session_id[:8]}[/bold]",
                 id="question-title",
             )
-            with VerticalScroll():
+            scroll = VerticalScroll()
+            scroll.can_focus = False
+            with scroll:
                 for idx, q in enumerate(self.questions):
                     header = str(q.get("header") or "").strip()
                     if header:
@@ -135,6 +161,29 @@ class QuestionModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_mount(self) -> None:
+        """Place initial focus on the first interactive option widget.
+
+        Order of preference: first single-select RadioSet, else first
+        multi-select Checkbox, else fall back to the free-text input. This
+        ensures the user can immediately select an option with arrow/space
+        keys instead of being trapped in (or having to mouse to) the "Other"
+        input.
+        """
+        for idx, q in enumerate(self.questions):
+            options = q.get("options") or []
+            if not options:
+                continue
+            multi = bool(q.get("multiSelect"))
+            target_id = f"#q{idx}-opt0" if multi else f"#q{idx}-radio"
+            try:
+                self.query_one(target_id).focus()
+                return
+            except Exception:
+                continue
+        with contextlib.suppress(Exception):
+            self.query_one("#other-input", Input).focus()
 
     def _submit(self) -> None:
         parts: list[str] = []
