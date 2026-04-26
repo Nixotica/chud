@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
@@ -71,36 +72,40 @@ class SessionView(Vertical):
         kind = event.kind
         p = event.payload
         if kind == EventKind.TRANSCRIPT_APPENDED:
-            role = p.get("role", "?")
+            role = escape(str(p.get("role", "?")))
             if "text" in p:
-                self.transcript.write(f"[bold]{role}:[/bold] {p['text']}")
+                self.transcript.write(f"[bold]{role}:[/bold] {escape(str(p['text']))}")
             elif "tool_use" in p:
                 tu = p["tool_use"]
                 self.transcript.write(
-                    f"[dim]{role} → tool:[/dim] [yellow]{tu.get('name')}[/yellow] "
-                    f"{_short_json(tu.get('input'))}"
+                    f"[dim]{role} → tool:[/dim] [yellow]{escape(str(tu.get('name')))}[/yellow] "
+                    f"{escape(_short_json(tu.get('input')))}"
                 )
-            else:
-                self.transcript.write(f"[dim]{role}:[/dim] {p.get('raw', '')}")
+            # Other transcript shapes (raw SystemMessage init blobs, UserMessage
+            # tool_result echoes) are intentionally not rendered by default.
+            # They remain in the in-memory event log and chud.log for debugging
+            # and for a future verbose mode.
         elif kind == EventKind.STATUS_CHANGED:
-            self.transcript.write(f"[dim italic]→ {p.get('status')}[/dim italic]")
+            self.transcript.write(
+                f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]"
+            )
         elif kind == EventKind.PLAN_PROPOSED:
             self.transcript.write(
                 "[bold magenta]── Plan proposed (modal will open) ──[/bold magenta]"
             )
         elif kind == EventKind.NEEDS_USER_INPUT:
             msg = p.get("message") or p.get("reason", "agent waiting")
-            self.transcript.write(f"[bold red]? agent needs input: {msg}[/bold red]")
+            self.transcript.write(f"[bold red]? agent needs input: {escape(str(msg))}[/bold red]")
         elif kind == EventKind.REPO_ATTACHED:
             self.transcript.write(
-                f"[blue]+ attached:[/blue] {p.get('repo')} → {p.get('worktree')}"
+                f"[blue]+ attached:[/blue] {escape(str(p.get('repo')))} → "
+                f"{escape(str(p.get('worktree')))}"
             )
         elif kind == EventKind.UNKNOWN_MESSAGE:
-            self.transcript.write(
-                f"[dim]raw {p.get('type', '?')}:[/dim] [dim]{p.get('raw', '')}[/dim]"
-            )
+            # Intentionally not rendered — kept in the event log + chud.log only.
+            pass
         elif kind == EventKind.ERROR:
-            self.transcript.write(f"[bold red]ERROR:[/bold red] {p.get('error')}")
+            self.transcript.write(f"[bold red]ERROR:[/bold red] {escape(str(p.get('error')))}")
 
 
 def _short_json(obj: Any, limit: int = 120) -> str:

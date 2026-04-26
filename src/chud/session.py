@@ -85,6 +85,21 @@ class AgentSession:
         )
 
     async def stop(self) -> None:
+        # Resolve any in-flight plan decision so the SDK's can_use_tool round-trip
+        # completes before we tear down the stream; otherwise the Claude subprocess
+        # logs "Error in hook callback hook_0: Stream closed" when its control
+        # request can't reach us.
+        if self._plan_decision is not None and not self._plan_decision.done():
+            self._plan_decision.set_result(
+                PermissionResultDeny(message="Session stopped.")
+            )
+        self._plan_decision = None
+        self._pending_plan_text = None
+
+        if self._client is not None:
+            with contextlib.suppress(Exception):
+                await self._client.interrupt()
+
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -214,6 +229,9 @@ class AgentSession:
                     {"role": "assistant", "tool_use": tc},
                 )
         elif isinstance(msg, UserMessage):
+            # Mostly tool_result echoes from the SDK. The default renderer drops
+            # the raw payload; a future verbose mode can extract structured
+            # tool_use_id / content from msg.content.
             await self._emit(
                 EventKind.TRANSCRIPT_APPENDED, {"role": "user", "raw": _stringify(msg)}
             )
@@ -222,12 +240,12 @@ class AgentSession:
                 EventKind.TRANSCRIPT_APPENDED, {"role": "system", "raw": _stringify(msg)}
             )
         elif isinstance(msg, ResultMessage):
+            # Full ResultMessage stats stay in chud.log; the UI just sees the
+            # status transition emitted by _set_status.
+            log.debug("ResultMessage for session %s: %s", self.state.id, _stringify(msg))
             await self._set_status(SessionStatus.DONE)
-            await self._emit(
-                EventKind.STATUS_CHANGED,
-                {"status": SessionStatus.DONE.value, "result": _stringify(msg)},
-            )
         else:
+            log.warning("unknown SDK message type %s", type(msg).__name__)
             await self._emit(
                 EventKind.UNKNOWN_MESSAGE,
                 {"type": type(msg).__name__, "raw": _stringify(msg)},

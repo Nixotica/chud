@@ -19,6 +19,7 @@ KEY_CREATED_AT = "created_at"
 KEY_LAST_ACTIVITY_AT = "last_activity_at"
 KEY_PENDING_QUESTION = "pending_question"
 KEY_ERROR = "error"
+KEY_OPTIONS = "options"
 
 
 class SessionStatus(str, Enum):
@@ -64,6 +65,7 @@ class SessionState:
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     pending_question: str | None = None
     error: str | None = None
+    options: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,10 +78,14 @@ class SessionState:
             KEY_LAST_ACTIVITY_AT: self.last_activity_at.isoformat(),
             KEY_PENDING_QUESTION: self.pending_question,
             KEY_ERROR: self.error,
+            KEY_OPTIONS: dict(self.options),
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionState:
+        # Imported lazily to avoid a circular import at module load.
+        from chud.options import normalize_options
+
         return cls(
             id=d[KEY_ID],
             workspace_dir=Path(d[KEY_WORKSPACE_DIR]),
@@ -92,6 +98,7 @@ class SessionState:
             last_activity_at=datetime.fromisoformat(d[KEY_LAST_ACTIVITY_AT]),
             pending_question=d.get(KEY_PENDING_QUESTION),
             error=d.get(KEY_ERROR),
+            options=normalize_options(d.get(KEY_OPTIONS)),
         )
 
 
@@ -103,6 +110,9 @@ class EventKind(str, Enum):
     REPO_ATTACHED = "repo_attached"
     UNKNOWN_MESSAGE = "unknown_message"
     ERROR = "error"
+    CLEANUP_REQUESTED = "cleanup_requested"
+    PR_PUBLISHED = "pr_published"
+    PR_FAILED = "pr_failed"
 
 
 @dataclass

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Label, ListItem, ListView
@@ -27,33 +28,35 @@ STATUS_STYLE: dict[SessionStatus, str] = {
 }
 
 
+def _render_text(state: SessionState) -> Text:
+    glyph = STATUS_GLYPH[state.status]
+    style = STATUS_STYLE[state.status]
+    prompt = (
+        state.initial_prompt.strip().splitlines()[0]
+        if state.initial_prompt
+        else "(no prompt)"
+    )
+    prompt = prompt[:32] + ("…" if len(prompt) > 32 else "")
+    repos = len(state.attached_repos)
+    repo_chip = f" [{repos}r]" if repos else ""
+    text = Text()
+    text.append(glyph, style=style)
+    text.append(f" {state.id[:6]}{repo_chip}  {prompt}")
+    return text
+
+
 class SessionRow(ListItem):
     """One row in the session list, identified by session id."""
 
     def __init__(self, state: SessionState) -> None:
-        super().__init__(id=f"session-{state.id}")
+        self._label = Label(_render_text(state))
+        super().__init__(self._label, id=f"session-{state.id}")
         self.session_id = state.id
         self.session_state = state
 
-    def compose(self) -> ComposeResult:
-        yield Label(self._render())
-
     def update_state(self, state: SessionState) -> None:
         self.session_state = state
-        label = self.query_one(Label)
-        label.update(self._render())
-
-    def _render(self) -> str:
-        glyph = STATUS_GLYPH[self.session_state.status]
-        style = STATUS_STYLE[self.session_state.status]
-        if self.session_state.initial_prompt:
-            prompt = self.session_state.initial_prompt.strip().splitlines()[0]
-        else:
-            prompt = "(no prompt)"
-        prompt = prompt[:32] + ("…" if len(prompt) > 32 else "")
-        repos = len(self.session_state.attached_repos)
-        repo_chip = f" [{repos}r]" if repos else ""
-        return f"[{style}]{glyph}[/{style}] {self.session_state.id[:6]}{repo_chip}  {prompt}"
+        self._label.update(_render_text(state))
 
 
 class SessionListView(VerticalScroll):
@@ -81,11 +84,12 @@ class SessionListView(VerticalScroll):
         self.list_view.append(row)
 
     def update_session(self, state: SessionState) -> None:
-        rows = self.query(f"#session-{state.id}")
-        if not rows:
+        try:
+            row = self.query_one(f"#session-{state.id}", SessionRow)
+        except Exception:
             self.add_session(state)
             return
-        rows.first(SessionRow).update_state(state)
+        row.update_state(state)
 
     def remove_session(self, session_id: str) -> None:
         rows = self.query(f"#session-{session_id}")

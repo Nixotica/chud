@@ -9,9 +9,11 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Input, ListView
 
+from chud import state as state_mod
 from chud.manager import SessionManager
-from chud.types import Event, EventKind
+from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.attach_repo_modal import AttachRepoModal
+from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
 from chud.widgets.session_list import SessionListView, SessionRow
@@ -48,6 +50,7 @@ class ChudApp(App[None]):
         self._event_log: dict[str, list[Event]] = defaultdict(list)
         self._selected_session_id: str | None = None
         self._open_plan_modals: set[str] = set()
+        self._open_cleanup_modals: set[str] = set()
 
     # ------------------------------------------------------------------ layout
 
@@ -77,13 +80,18 @@ class ChudApp(App[None]):
 
     # ------------------------------------------------------------------ actions
 
-    async def action_new_session(self) -> None:
+    def action_new_session(self) -> None:
+        self.run_worker(self._new_session_flow(), exclusive=False)
+
+    async def _new_session_flow(self) -> None:
         result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
         if result is None:
             return
         try:
             sess = await self.manager.create_session(
-                prompt=result.prompt, repo_path=result.repo_path
+                prompt=result.prompt,
+                repo_path=result.repo_path,
+                options=result.options,
             )
         except Exception as e:
             log.exception("create_session failed")
@@ -92,7 +100,10 @@ class ChudApp(App[None]):
         self.query_one(SessionListView).add_session(sess.state)
         self._select_session(sess.state.id)
 
-    async def action_attach_repo(self) -> None:
+    def action_attach_repo(self) -> None:
+        self.run_worker(self._attach_repo_flow(), exclusive=False)
+
+    async def _attach_repo_flow(self) -> None:
         sid = self._selected_session_id
         if sid is None:
             self.notify("No session selected.", severity="warning")
@@ -147,6 +158,11 @@ class ChudApp(App[None]):
         sess = self.manager.sessions.get(sid)
         if sess is None:
             return
+        if sess.state.status == SessionStatus.AWAITING_PLAN_APPROVAL:
+            # Bypassing the plan modal would inject an out-of-order user message
+            # mid-tool-call; the agent's prompt-injection guard would drop it.
+            self.notify("Use the plan modal (a/r/Enter) to respond.", severity="warning")
+            return
         try:
             await sess.send_message(text)
         except Exception as e:
@@ -177,6 +193,24 @@ class ChudApp(App[None]):
 
         if event.kind == EventKind.PLAN_PROPOSED:
             self._open_plan_modal(event.session_id, event.payload.get("plan", ""))
+        elif event.kind == EventKind.CLEANUP_REQUESTED:
+            self._open_cleanup_modal(event.session_id)
+        elif event.kind == EventKind.PR_PUBLISHED:
+            url = event.payload.get("url", "")
+            repo = event.payload.get("repo", "")
+            self.notify(f"Draft PR opened ({repo}): {url}")
+            view = self.query_one(SessionView)
+            view.transcript.write(
+                f"[bold green]+ draft PR:[/bold green] {repo} → {url}"
+            )
+        elif event.kind == EventKind.PR_FAILED:
+            err = event.payload.get("error", "")
+            repo = event.payload.get("repo", "")
+            self.notify(f"PR failed ({repo}): {err}", severity="error")
+            view = self.query_one(SessionView)
+            view.transcript.write(
+                f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
+            )
 
     def _open_plan_modal(self, session_id: str, plan_text: str) -> None:
         if session_id in self._open_plan_modals:
@@ -185,14 +219,16 @@ class ChudApp(App[None]):
 
         async def show_modal() -> None:
             try:
-                approved = await self.push_screen_wait(
+                result = await self.push_screen_wait(
                     PlanApprovalModal(session_id=session_id, plan_text=plan_text)
                 )
                 sess = self.manager.sessions.get(session_id)
                 if sess is None:
                     return
-                if approved:
+                if result is True:
                     await sess.approve_plan()
+                elif isinstance(result, str) and result:
+                    await sess.reject_plan(reason=result)
                 else:
                     await sess.reject_plan()
             finally:
@@ -200,14 +236,41 @@ class ChudApp(App[None]):
 
         self.run_worker(show_modal(), exclusive=False)
 
+    def _open_cleanup_modal(self, session_id: str) -> None:
+        if session_id in self._open_cleanup_modals:
+            return
+        sess = self.manager.sessions.get(session_id)
+        if sess is None:
+            return
+        self._open_cleanup_modals.add(session_id)
+        state = sess.state
+
+        async def show_modal() -> None:
+            try:
+                confirmed = await self.push_screen_wait(
+                    CleanupConfirmationModal(state=state)
+                )
+                if not confirmed:
+                    return
+                await self.manager.kill_session(session_id, cleanup_workspace=True)
+                self.query_one(SessionListView).remove_session(session_id)
+                self._event_log.pop(session_id, None)
+                if self._selected_session_id == session_id:
+                    self._selected_session_id = None
+                    self.query_one(SessionView).show_session(None)
+            finally:
+                self._open_cleanup_modals.discard(session_id)
+
+        self.run_worker(show_modal(), exclusive=False)
+
 
 def main() -> int:
+    log_path = state_mod.data_root() / "chud.log"
     logging.basicConfig(
         level=logging.INFO,
-        filename=Path.home() / ".local" / "share" / "chud" / "chud.log",
+        filename=log_path,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    (Path.home() / ".local" / "share" / "chud").mkdir(parents=True, exist_ok=True)
     ChudApp().run()
     return 0
 
