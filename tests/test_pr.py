@@ -339,6 +339,43 @@ async def test_publish_draft_prs_reports_push_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_publish_draft_prs_uses_override_title_and_body(monkeypatch):
+    """Caller-supplied title/body must reach `gh pr create` verbatim."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    captured: list[list[str]] = []
+
+    async def fake_run(cmd, cwd=None):
+        captured.append(cmd)
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return 0, "1", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/7", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(
+        _state_with_one_repo(),
+        title="user-edited title",
+        body="user-edited body",
+    )
+    assert len(results) == 1 and results[0].url == "https://github.com/x/y/pull/7"
+
+    gh_calls = [c for c in captured if c[:1] == ["gh"]]
+    assert len(gh_calls) == 1
+    cmd = gh_calls[0]
+    assert "user-edited title" in cmd
+    assert "user-edited body" in cmd
+    # And the H1/Context defaults should NOT have been used.
+    assert "add a foo" not in " ".join(cmd)
+
+
+@pytest.mark.asyncio
 async def test_default_branch_falls_back_to_main(monkeypatch):
     async def fake_run(cmd, cwd=None):
         # Both lookups fail / return nothing useful → fallback.

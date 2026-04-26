@@ -212,7 +212,7 @@ def _body_from_prompt(session_id: str, prompt: str) -> str:
     )
 
 
-def _pick_title(state: SessionState) -> str:
+def pick_title(state: SessionState) -> str:
     """Prefer the approved plan's H1 heading; fall back to the prompt."""
     if state.approved_plan:
         plan_title = _extract_plan_title(state.approved_plan)
@@ -221,7 +221,7 @@ def _pick_title(state: SessionState) -> str:
     return _title_from_prompt(state.initial_prompt)
 
 
-def _pick_body(state: SessionState) -> str:
+def pick_body(state: SessionState) -> str:
     """Prefer the plan's ``## Context`` section as the body lead, with a
     small footer pointing back to the chud session id. Fall back to the
     prompt-only body when no plan is available.
@@ -233,8 +233,24 @@ def _pick_body(state: SessionState) -> str:
     return _body_from_prompt(state.id, state.initial_prompt)
 
 
-async def publish_draft_prs(state: SessionState) -> list[PRResult]:
+# Backwards-compatible aliases for any callers (and tests) still using the
+# original underscore-prefixed names. Safe to remove once no internal user
+# remains.
+_pick_title = pick_title
+_pick_body = pick_body
+
+
+async def publish_draft_prs(
+    state: SessionState,
+    title: str | None = None,
+    body: str | None = None,
+) -> list[PRResult]:
     """For each attached worktree: push the chud branch and open a draft PR.
+
+    ``title`` / ``body`` override the plan-derived defaults when supplied
+    (e.g. after the user edits them in the PR-review modal). Both are applied
+    verbatim to every attached repo's PR; per-repo overrides are not modeled
+    yet.
 
     Returns one ``PRResult`` per attached repo. If ``gh`` isn't on PATH, returns
     a single failure result tagged with an empty repo label.
@@ -242,8 +258,8 @@ async def publish_draft_prs(state: SessionState) -> list[PRResult]:
     if shutil.which("gh") is None:
         return [PRResult(repo_label="", branch="", error="gh CLI not installed")]
 
-    title = _pick_title(state)
-    body = _pick_body(state)
+    title = title if title is not None else pick_title(state)
+    body = body if body is not None else pick_body(state)
     results: list[PRResult] = []
 
     for label, wt in state.attached_repos.items():

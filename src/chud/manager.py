@@ -194,22 +194,69 @@ class SessionManager:
                 Event(session_id=sid, kind=EventKind.CLEANUP_REQUESTED, payload={})
             )
             return
-        task = asyncio.create_task(
-            self._finish_done(sess.state, do_cleanup), name=f"chud-done-{sid}"
-        )
-        self._pr_tasks[sid] = task
-        task.add_done_callback(lambda _t, s=sid: self._pr_tasks.pop(s, None))
-
-    async def _finish_done(self, state: SessionState, request_cleanup: bool) -> None:
-        await self._publish_prs(state)
-        if request_cleanup:
-            await self._broadcast(
-                Event(session_id=state.id, kind=EventKind.CLEANUP_REQUESTED, payload={})
+        # Defer the actual publish until the user accepts the proposed
+        # title/body via the PR-review modal. The app responds via
+        # ``submit_pr_review`` which runs the publish-then-cleanup chain.
+        await self._broadcast(
+            Event(
+                session_id=sid,
+                kind=EventKind.PR_REVIEW_REQUESTED,
+                payload={
+                    "title": pr_mod.pick_title(sess.state),
+                    "body": pr_mod.pick_body(sess.state),
+                    "repos": list(sess.state.attached_repos.keys()),
+                },
             )
+        )
 
-    async def _publish_prs(self, state: SessionState) -> None:
+    async def submit_pr_review(
+        self,
+        session_id: str,
+        accepted: bool,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> None:
+        """User response to a ``PR_REVIEW_REQUESTED`` prompt.
+
+        On accept, publish the PR(s) with the (possibly edited) title/body.
+        On reject, skip the publish. Either way, if the session opted into
+        self-cleanup, broadcast ``CLEANUP_REQUESTED`` *after* the publish has
+        finished, preserving the same ordering guarantee that protected the
+        old auto-publish path.
+        """
+        sess = self.sessions.get(session_id)
+        if sess is None:
+            return
+        opts = sess.state.options or {}
+        do_cleanup = bool(opts.get(OPT_SELF_CLEANUP))
+
+        async def runner(state: SessionState = sess.state) -> None:
+            if accepted:
+                await self._publish_prs(state, title=title, body=body)
+            if do_cleanup:
+                await self._broadcast(
+                    Event(
+                        session_id=state.id,
+                        kind=EventKind.CLEANUP_REQUESTED,
+                        payload={},
+                    )
+                )
+
+        # Reuse the same task-tracking slot so kill_session cancels an
+        # in-flight publish-then-cleanup chain in O(1), exactly like the
+        # legacy ``_finish_done`` task did.
+        task = asyncio.create_task(runner(), name=f"chud-pr-review-{session_id}")
+        self._pr_tasks[session_id] = task
+        task.add_done_callback(lambda _t, s=session_id: self._pr_tasks.pop(s, None))
+
+    async def _publish_prs(
+        self,
+        state: SessionState,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> None:
         try:
-            results = await pr_mod.publish_draft_prs(state)
+            results = await pr_mod.publish_draft_prs(state, title=title, body=body)
         except Exception as e:
             log.exception("publish_draft_prs crashed for session %s", state.id)
             await self._broadcast(

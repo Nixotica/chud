@@ -116,6 +116,7 @@ class EventKind(str, Enum):
     UNKNOWN_MESSAGE = "unknown_message"
     ERROR = "error"
     CLEANUP_REQUESTED = "cleanup_requested"
+    PR_REVIEW_REQUESTED = "pr_review_requested"
     PR_PUBLISHED = "pr_published"
     PR_FAILED = "pr_failed"
     WORKTREE_DISCARDED = "worktree_discarded"
