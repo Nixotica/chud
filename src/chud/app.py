@@ -450,8 +450,6 @@ class ChudApp(App[None]):
                 if isinstance(result, str) and result:
                     await sess.answer_question(result)
                 else:
-                    # Cancel / dismissed: still resolve the future so the agent
-                    # doesn't hang waiting on a Deny that never arrives.
                     await sess.answer_question(
                         "(user dismissed the question without answering)"
                     )

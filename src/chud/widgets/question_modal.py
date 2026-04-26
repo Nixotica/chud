@@ -12,20 +12,6 @@ from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Stat
 
 class QuestionModal(ModalScreen[str | None]):
     """Render an AskUserQuestion tool call and collect the user's answer.
-
-    The agent's tool input shape (defensively parsed):
-
-        {"questions": [
-            {"question": "...", "header": "...", "multiSelect": false,
-             "options": [{"label": "...", "description": "..."}]}
-        ]}
-
-    Returns:
-        - str on submit: a formatted summary of selections, e.g.
-          ``"Q1: A | Q2: B, C"`` (with "; other: <text>" appended if the user
-          typed a free-text addition).
-        - None on cancel: the caller should treat this as the user declining
-          to answer so the agent's pending tool call can still be unblocked.
     """
 
     DEFAULT_CSS = """
@@ -115,8 +101,6 @@ class QuestionModal(ModalScreen[str | None]):
                     options = q.get("options") or []
                     multi = bool(q.get("multiSelect"))
                     if not options:
-                        # No options — user can only respond via the free-text
-                        # "Other" input below; nothing to render here.
                         continue
                     if multi:
                         for opt_idx, opt in enumerate(options):
