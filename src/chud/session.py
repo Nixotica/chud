@@ -18,6 +18,9 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import (
+    HookContext,
+    HookInput,
+    HookJSONOutput,
     HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -177,31 +180,32 @@ class AgentSession:
 
     async def _on_stop_hook(
         self,
-        input_data: dict[str, Any],
+        input_data: HookInput,
         tool_use_id: str | None,
-        context: Any,
-    ) -> dict[str, Any]:
+        context: HookContext,
+    ) -> HookJSONOutput:
         """Detect 'agent went idle without finishing' (probable question to user)."""
         if self.state.status not in (SessionStatus.AWAITING_PLAN_APPROVAL, SessionStatus.DONE):
             await self._set_status(SessionStatus.AWAITING_USER)
             await self._emit(
                 EventKind.NEEDS_USER_INPUT,
-                {"reason": "stop_hook", "raw": input_data},
+                {"reason": "stop_hook", "raw": dict(input_data)},
             )
         return {}
 
     async def _on_notification_hook(
         self,
-        input_data: dict[str, Any],
+        input_data: HookInput,
         tool_use_id: str | None,
-        context: Any,
-    ) -> dict[str, Any]:
-        message = str(input_data.get("message") or input_data.get("notification") or input_data)
+        context: HookContext,
+    ) -> HookJSONOutput:
+        raw = dict(input_data)
+        message = str(raw.get("message") or raw.get("notification") or raw)
         self.state.pending_question = message
         await self._set_status(SessionStatus.AWAITING_USER)
         await self._emit(
             EventKind.NEEDS_USER_INPUT,
-            {"reason": "notification", "message": message, "raw": input_data},
+            {"reason": "notification", "message": message, "raw": raw},
         )
         return {}
 

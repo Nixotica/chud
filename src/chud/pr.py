@@ -14,7 +14,9 @@ so PRs read as summaries of *what was done* rather than verbatim user input.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -27,6 +29,12 @@ log = logging.getLogger(__name__)
 
 _TITLE_LIMIT = 72
 
+# A real GitHub push completes in a few seconds; anything past this is a
+# hang, typically a credential prompt that the TUI's raw-mode terminal
+# can't satisfy. Without this guard, _publish_prs parks forever and the
+# post-DONE CLEANUP_REQUESTED broadcast never fires.
+_RUN_TIMEOUT_S = 60.0
+
 
 @dataclass
 class PRResult:
@@ -36,15 +44,50 @@ class PRResult:
     error: str | None = None
 
 
+def _no_prompt_env() -> dict[str, str]:
+    """Env that forbids git/ssh from waiting on an interactive credential prompt.
+
+    Without these, ``git push`` inheriting the TUI's TTY can either block on
+    stdin (raw mode swallows the keypresses git expects) or scribble a
+    password prompt onto the screen — both manifest as "TUI got laggy and
+    nothing happened." With them set, git/ssh fail fast with an auth error
+    that surfaces as a PR_FAILED toast.
+    """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_ASKPASS", "/bin/true")
+    env.setdefault("SSH_ASKPASS", "/bin/true")
+    env.setdefault("SSH_ASKPASS_REQUIRE", "never")
+    return env
+
+
 async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-    """Run a subprocess, returning (returncode, stdout, stderr)."""
+    """Run a subprocess, returning (returncode, stdout, stderr).
+
+    stdin is wired to /dev/null so git/gh can never read from the parent
+    TTY, and a 60s wall-clock timeout kills any process that still hangs
+    despite that — preserving the invariant that ``_finish_done`` always
+    reaches its CLEANUP_REQUESTED broadcast.
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd) if cwd is not None else None,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_no_prompt_env(),
     )
-    out_b, err_b = await proc.communicate()
+    try:
+        out_b, err_b = await asyncio.wait_for(
+            proc.communicate(), timeout=_RUN_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        return (-1, "", f"timed out after {_RUN_TIMEOUT_S:.0f}s")
     return (
         proc.returncode if proc.returncode is not None else -1,
         out_b.decode(errors="replace").strip(),

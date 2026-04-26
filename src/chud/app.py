@@ -224,6 +224,17 @@ class ChudApp(App[None]):
             if sess is not None:
                 self.query_one(SessionView).update_header(sess.state)
 
+        # A stop-hook NEEDS_USER_INPUT followed by a ResultMessage DONE leaves
+        # an "input" prompt active that nobody can resolve (the agent already
+        # finished, so the user has nothing to type). That stranded prompt
+        # blocks every later modal in the FIFO queue — including the
+        # post-DONE cleanup modal. Drop stale "input" prompts whenever a
+        # session leaves AWAITING_USER.
+        if event.kind == EventKind.STATUS_CHANGED:
+            new_status = event.payload.get("status")
+            if new_status != SessionStatus.AWAITING_USER.value:
+                self._drop_session_input_prompts(event.session_id)
+
         if event.kind == EventKind.PLAN_PROPOSED:
             self._enqueue_prompt(
                 PromptRequest(
@@ -324,6 +335,20 @@ class ChudApp(App[None]):
         if (
             self._prompt_active is not None
             and self._prompt_active.session_id == session_id
+        ):
+            self._prompt_active = None
+            self._maybe_show_next_prompt()
+
+    def _drop_session_input_prompts(self, session_id: str) -> None:
+        """Clear stale 'input' prompts when a session leaves AWAITING_USER."""
+        self._prompt_queue = [
+            p for p in self._prompt_queue
+            if not (p.session_id == session_id and p.kind == "input")
+        ]
+        if (
+            self._prompt_active is not None
+            and self._prompt_active.session_id == session_id
+            and self._prompt_active.kind == "input"
         ):
             self._prompt_active = None
             self._maybe_show_next_prompt()

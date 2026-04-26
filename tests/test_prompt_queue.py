@@ -62,6 +62,14 @@ def _cleanup_event(sid: str) -> Event:
     return Event(session_id=sid, kind=EventKind.CLEANUP_REQUESTED)
 
 
+def _status_event(sid: str, status: SessionStatus) -> Event:
+    return Event(
+        session_id=sid,
+        kind=EventKind.STATUS_CHANGED,
+        payload={"status": status.value},
+    )
+
+
 def _count_modals(app: ChudApp, modal_cls: type) -> int:
     return sum(1 for s in app.screen_stack if isinstance(s, modal_cls))
 
@@ -256,6 +264,77 @@ async def test_active_prompt_session_killed_advances_queue(tmp_path):
         assert app._prompt_active is not None
         assert app._prompt_active.session_id == "sess-b"
         assert app._prompt_queue == []
+
+
+@pytest.mark.asyncio
+async def test_status_change_to_done_drops_stale_input_prompt(tmp_path):
+    """Regression: stop-hook NEEDS_USER_INPUT followed by ResultMessage DONE
+    used to leave an unresolvable 'input' prompt active that blocked the
+    post-DONE cleanup modal from ever appearing.
+    """
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _register_session(app, "sess-a", tmp_path)
+
+        # Stop-hook fires NEEDS_USER_INPUT — input prompt becomes active.
+        app._on_event(_input_event("sess-a", "stop_hook"))
+        await pilot.pause()
+        assert app._prompt_active is not None
+        assert app._prompt_active.kind == "input"
+        assert app._prompt_active.session_id == "sess-a"
+
+        # ResultMessage flips status to DONE. The stale input prompt has no
+        # one to resolve it, so the queue should drop it now.
+        app._on_event(_status_event("sess-a", SessionStatus.DONE))
+        await pilot.pause()
+        assert app._prompt_active is None
+        assert app._prompt_queue == []
+
+        # Cleanup broadcast that follows DONE should now surface a modal.
+        app._on_event(_cleanup_event("sess-a"))
+        await pilot.pause()
+        await pilot.pause()
+        assert _count_modals(app, CleanupConfirmationModal) == 1
+        assert app._prompt_active is not None
+        assert app._prompt_active.kind == "cleanup"
+
+
+@pytest.mark.asyncio
+async def test_status_change_to_executing_drops_stale_input_prompt(tmp_path):
+    """A stop-hook input prompt should also clear if the agent recovers and
+    transitions back to EXECUTING on its own.
+    """
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _register_session(app, "sess-a", tmp_path)
+
+        app._on_event(_input_event("sess-a"))
+        await pilot.pause()
+        assert app._prompt_active is not None
+        assert app._prompt_active.kind == "input"
+
+        app._on_event(_status_event("sess-a", SessionStatus.EXECUTING))
+        await pilot.pause()
+        assert app._prompt_active is None
+
+
+@pytest.mark.asyncio
+async def test_status_change_to_awaiting_user_keeps_input_prompt(tmp_path):
+    """The drop only fires when the new status is *not* AWAITING_USER —
+    a STATUS_CHANGED(awaiting_user) event must not eat its own input prompt.
+    """
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _register_session(app, "sess-a", tmp_path)
+
+        app._on_event(_status_event("sess-a", SessionStatus.AWAITING_USER))
+        app._on_event(_input_event("sess-a"))
+        await pilot.pause()
+        assert app._prompt_active is not None
+        assert app._prompt_active.kind == "input"
 
 
 @pytest.mark.asyncio
