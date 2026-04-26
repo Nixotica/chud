@@ -72,7 +72,11 @@ async def test_done_without_options_emits_no_extra_events(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_done_with_make_draft_pr_invokes_publisher(tmp_path, monkeypatch):
+async def test_done_with_make_draft_pr_requests_review_not_publish(
+    tmp_path, monkeypatch
+):
+    """DONE with the draft-PR option must broadcast PR_REVIEW_REQUESTED and
+    NOT publish until ``submit_pr_review(accepted=True)`` is invoked."""
     mgr = SessionManager()
     sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: False}, tmp_path)
     mgr.sessions[sess.state.id] = sess
@@ -80,20 +84,111 @@ async def test_done_with_make_draft_pr_invokes_publisher(tmp_path, monkeypatch):
 
     calls: list[str] = []
 
-    async def fake_publish(state):
+    async def fake_publish(state, title=None, body=None):
         calls.append(state.id)
         return []
 
     monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
 
+    queue = mgr.subscribe()
     await mgr._handle_event(_done_event(sess.state.id), sess)
 
-    # _on_session_done schedules an asyncio task; await pending tasks.
-    pending = list(mgr._pr_tasks.values())
-    for task in pending:
+    # No pending PR task yet — the manager waits for submit_pr_review.
+    for task in list(mgr._pr_tasks.values()):
+        await task
+    assert calls == []
+
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+    assert EventKind.PR_REVIEW_REQUESTED in kinds
+    assert EventKind.PR_PUBLISHED not in kinds
+
+
+@pytest.mark.asyncio
+async def test_submit_pr_review_accept_publishes(tmp_path, monkeypatch):
+    mgr = SessionManager()
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: False}, tmp_path)
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    async def fake_publish(state, title=None, body=None):
+        seen.append((state.id, title, body))
+        return [PRResult(repo_label="r", branch="b", url="https://e/pr/1")]
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
+
+    queue = mgr.subscribe()
+    await mgr.submit_pr_review(
+        sess.state.id, accepted=True, title="edited title", body="edited body"
+    )
+    for task in list(mgr._pr_tasks.values()):
         await task
 
-    assert calls == [sess.state.id]
+    assert seen == [(sess.state.id, "edited title", "edited body")]
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+    assert EventKind.PR_PUBLISHED in kinds
+    assert EventKind.CLEANUP_REQUESTED not in kinds
+
+
+@pytest.mark.asyncio
+async def test_submit_pr_review_reject_skips_publish(tmp_path, monkeypatch):
+    mgr = SessionManager()
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: False}, tmp_path)
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    calls: list[str] = []
+
+    async def fake_publish(state, title=None, body=None):
+        calls.append(state.id)
+        return []
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
+
+    queue = mgr.subscribe()
+    await mgr.submit_pr_review(sess.state.id, accepted=False)
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    assert calls == []
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+    assert EventKind.PR_PUBLISHED not in kinds
+    assert EventKind.CLEANUP_REQUESTED not in kinds
+
+
+@pytest.mark.asyncio
+async def test_submit_pr_review_reject_with_cleanup_emits_cleanup(
+    tmp_path, monkeypatch
+):
+    """Rejecting the PR must still trigger the cleanup prompt when the
+    self-cleanup option is enabled — the user may have rejected the PR
+    *because* they want to wipe the workspace."""
+    mgr = SessionManager()
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path)
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    async def fake_publish(state, title=None, body=None):
+        raise AssertionError("publish must not run on reject")
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
+
+    queue = mgr.subscribe()
+    await mgr.submit_pr_review(sess.state.id, accepted=False)
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    kinds: list[EventKind] = []
+    while not queue.empty():
+        kinds.append(queue.get_nowait().kind)
+    assert kinds.count(EventKind.CLEANUP_REQUESTED) == 1
 
 
 @pytest.mark.asyncio
@@ -172,11 +267,12 @@ async def test_kill_session_default_does_not_cleanup(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_done_with_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
+async def test_accepted_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
     """CLEANUP_REQUESTED must be broadcast only after publish_draft_prs returns.
 
     Locks the bug where cleanup raced PR publish, wiping the worktree before
-    git push could finish.
+    git push could finish. Now the user explicitly accepts via
+    ``submit_pr_review`` before publish runs.
     """
     mgr = SessionManager()
     sess = _make_session(
@@ -185,7 +281,7 @@ async def test_done_with_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
     mgr.sessions[sess.state.id] = sess
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
-    async def fake_publish(state):
+    async def fake_publish(state, title=None, body=None):
         for _ in range(3):
             await asyncio.sleep(0)
         return [PRResult(repo_label="r", branch="b", url="https://example/pr/1")]
@@ -193,8 +289,15 @@ async def test_done_with_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
     monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
 
     queue = mgr.subscribe()
-    await mgr._handle_event(_done_event(sess.state.id), sess)
 
+    # DONE first surfaces the review request.
+    await mgr._handle_event(_done_event(sess.state.id), sess)
+    # Drain the review-request event so we only inspect the publish→cleanup
+    # ordering produced by submit_pr_review.
+    while not queue.empty():
+        queue.get_nowait()
+
+    await mgr.submit_pr_review(sess.state.id, accepted=True)
     for task in list(mgr._pr_tasks.values()):
         await task
 
@@ -210,8 +313,9 @@ async def test_done_with_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_done_with_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
-    """If PR publish raises, cleanup is still offered (after PR_FAILED)."""
+async def test_accepted_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
+    """If PR publish raises after the user accepts, cleanup is still offered
+    (after PR_FAILED)."""
     mgr = SessionManager()
     sess = _make_session(
         {OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path
@@ -219,14 +323,17 @@ async def test_done_with_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
     mgr.sessions[sess.state.id] = sess
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
-    async def boom(state):
+    async def boom(state, title=None, body=None):
         raise RuntimeError("publish exploded")
 
     monkeypatch.setattr(pr_mod, "publish_draft_prs", boom)
 
     queue = mgr.subscribe()
     await mgr._handle_event(_done_event(sess.state.id), sess)
+    while not queue.empty():
+        queue.get_nowait()
 
+    await mgr.submit_pr_review(sess.state.id, accepted=True)
     for task in list(mgr._pr_tasks.values()):
         await task
 

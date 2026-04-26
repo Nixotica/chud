@@ -19,13 +19,14 @@ from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
 from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
 log = logging.getLogger(__name__)
 
-PromptKind = Literal["plan", "cleanup", "input", "question"]
+PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
 
 
 @dataclass
@@ -71,6 +72,7 @@ class ChudApp(App[None]):
         self._selected_session_id: str | None = None
         self._open_plan_modals: set[str] = set()
         self._open_cleanup_modals: set[str] = set()
+        self._open_pr_review_modals: set[str] = set()
         self._open_question_modals: set[str] = set()
         # FIFO queue of blocking user-input requests from agents. The first
         # request is shown until resolved; later requests wait their turn so a
@@ -255,6 +257,18 @@ class ChudApp(App[None]):
                     payload={"plan": event.payload.get("plan", "")},
                 )
             )
+        elif event.kind == EventKind.PR_REVIEW_REQUESTED:
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="pr_review",
+                    payload={
+                        "title": event.payload.get("title", ""),
+                        "body": event.payload.get("body", ""),
+                        "repos": list(event.payload.get("repos", []) or []),
+                    },
+                )
+            )
         elif event.kind == EventKind.QUESTION_ASKED:
             self._enqueue_prompt(
                 PromptRequest(
@@ -340,6 +354,8 @@ class ChudApp(App[None]):
             self._prompt_active = req
             if req.kind == "plan":
                 self._show_plan_modal(req)
+            elif req.kind == "pr_review":
+                self._show_pr_review_modal(req)
             elif req.kind == "cleanup":
                 self._show_cleanup_modal(req)
             elif req.kind == "input":
@@ -450,6 +466,55 @@ class ChudApp(App[None]):
 
         self.run_worker(show_modal(), exclusive=False)
 
+    def _show_pr_review_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        if session_id in self._open_pr_review_modals:
+            self._resolve_active_prompt(req)
+            return
+        if self.manager.sessions.get(session_id) is None:
+            self._resolve_active_prompt(req)
+            return
+        self._open_pr_review_modals.add(session_id)
+        title = str(req.payload.get("title", "") or "")
+        body = str(req.payload.get("body", "") or "")
+        repos = list(req.payload.get("repos", []) or [])
+
+        async def show_modal() -> None:
+            try:
+                result: PRReviewResult | None = await self.push_screen_wait(
+                    PRReviewModal(
+                        session_id=session_id,
+                        title=title,
+                        body=body,
+                        repos=repos,
+                    )
+                )
+                # ``None`` (e.g. unexpected dismissal) is treated as a reject so
+                # the post-PR cleanup prompt — if enabled — still progresses.
+                if result is None:
+                    accepted = False
+                    edited_title: str | None = None
+                    edited_body: str | None = None
+                else:
+                    accepted = result.accepted
+                    edited_title = result.title
+                    edited_body = result.body
+                try:
+                    await self.manager.submit_pr_review(
+                        session_id,
+                        accepted=accepted,
+                        title=edited_title,
+                        body=edited_body,
+                    )
+                except Exception as e:
+                    log.exception("submit_pr_review failed for %s", session_id)
+                    self.notify(f"PR review failed: {e}", severity="error")
+            finally:
+                self._open_pr_review_modals.discard(session_id)
+                self._resolve_active_prompt(req)
+
+        self.run_worker(show_modal(), exclusive=False)
+
     def _show_question_modal(self, req: PromptRequest) -> None:
         session_id = req.session_id
         question_input = req.payload.get("input", {}) or {}
@@ -488,11 +553,8 @@ class ChudApp(App[None]):
             self._resolve_active_prompt(req)
             return
         self._select_session(req.session_id)
-        try:
+        with contextlib.suppress(Exception):
             self.query_one(SessionView).input.focus()
-        except Exception:
-            # Focusing is best-effort; the prompt is still considered "shown".
-            pass
 
 
 def main() -> int:

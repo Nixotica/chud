@@ -165,7 +165,7 @@ async def test_plan_then_input_for_different_session_queues_correctly(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         sess_a = _register_session(app, "sess-a", tmp_path)
-        sess_b = _register_session(app, "sess-b", tmp_path)
+        _register_session(app, "sess-b", tmp_path)
 
         # Stub the SDK calls that the plan modal would trigger on approve.
         async def noop_approve():
