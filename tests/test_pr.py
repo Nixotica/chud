@@ -80,10 +80,7 @@ def test_extract_plan_title_returns_none_when_missing():
 
 def test_extract_plan_context_captures_section_body():
     plan = (
-        "# Title\n\n"
-        "## Context\n\n"
-        "First paragraph.\n\nSecond paragraph.\n\n"
-        "## Approach\n\nDo X.\n"
+        "# Title\n\n## Context\n\nFirst paragraph.\n\nSecond paragraph.\n\n## Approach\n\nDo X.\n"
     )
     body = pr_mod._extract_plan_context(plan)
     assert body is not None
@@ -278,9 +275,7 @@ async def test_publish_draft_prs_auto_commit_uses_plan_title(monkeypatch):
 
     monkeypatch.setattr(pr_mod, "_run", fake_run)
 
-    state = _state_with_one_repo(
-        approved_plan="# Fix the parser\n\n## Context\n\nIt was wrong.\n"
-    )
+    state = _state_with_one_repo(approved_plan="# Fix the parser\n\n## Context\n\nIt was wrong.\n")
     results = await pr_mod.publish_draft_prs(state)
     assert results[0].error is None
     assert captured_subject["v"] == "Fix the parser"

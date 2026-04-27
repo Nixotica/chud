@@ -15,10 +15,16 @@ Run from the repo root:
 | Run all tests | `pytest` |
 | Run one test | `pytest tests/test_worktree.py::test_name` |
 | Lint | `ruff check .` |
+| Format check | `ruff format --check .` |
+| Type check | `pyright` |
 
 - Entry point: `chud.app:main` (defined in `pyproject.toml` under `[project.scripts]`).
 - Tests use `pytest-asyncio` with `asyncio_mode = "auto"` (see `[tool.pytest.ini_options]`).
 - Runtime log: `~/.local/share/chud/chud.log`.
+
+### PR checks
+
+The PR workflow (`.github/workflows/tests.yml`) runs `pytest`, `ruff check .`, `ruff format --check .`, and `pyright` — all four must pass. `pyright` runs in `basic` mode against `src` and `tests` (configured under `[tool.pyright]` in `pyproject.toml`). Fix type errors at the source; do not silence them with `# type: ignore` unless there's a real reason (e.g. a deliberate runtime monkey-patch like the SDK method assignments in `tests/test_prompt_queue.py`).
 
 ## Architecture
 

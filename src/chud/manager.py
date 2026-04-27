@@ -111,9 +111,7 @@ class SessionManager:
         for sid in list(self.sessions):
             await self.kill_session(sid)
 
-    async def kill_session(
-        self, session_id: str, cleanup_workspace: bool = False
-    ) -> None:
+    async def kill_session(self, session_id: str, cleanup_workspace: bool = False) -> None:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
         wt_mgr = self.worktrees.pop(session_id, None)
@@ -231,14 +229,20 @@ class SessionManager:
         do_cleanup = bool(opts.get(OPT_SELF_CLEANUP))
 
         async def runner(state: SessionState = sess.state) -> None:
+            results: list[pr_mod.PRResult] = []
             if accepted:
-                await self._publish_prs(state, title=title, body=body)
+                results = await self._publish_prs(state, title=title, body=body)
             if do_cleanup:
+                published = [
+                    {"repo": r.repo_label, "url": r.url}
+                    for r in results
+                    if r.error is None and r.url and not r.discarded
+                ]
                 await self._broadcast(
                     Event(
                         session_id=state.id,
                         kind=EventKind.CLEANUP_REQUESTED,
-                        payload={},
+                        payload={"published_prs": published},
                     )
                 )
 
@@ -254,7 +258,7 @@ class SessionManager:
         state: SessionState,
         title: str | None = None,
         body: str | None = None,
-    ) -> None:
+    ) -> list[pr_mod.PRResult]:
         try:
             results = await pr_mod.publish_draft_prs(state, title=title, body=body)
         except Exception as e:
@@ -266,7 +270,7 @@ class SessionManager:
                     payload={"repo": "", "branch": "", "error": repr(e)},
                 )
             )
-            return
+            return []
         wt_mgr = self.worktrees.get(state.id)
         any_discarded_branches = False
         for r in results:
@@ -314,6 +318,7 @@ class SessionManager:
                 )
         if any_discarded_branches:
             self._persist()
+        return results
 
     # ------------------------------------------------------------------ persistence
 
