@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +28,8 @@ from chud.widgets.session_view import SessionView
 log = logging.getLogger(__name__)
 
 PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
+
+DevHook = Callable[["ChudApp"], Awaitable[None]]
 
 
 @dataclass
@@ -65,8 +68,9 @@ class ChudApp(App[None]):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dev_hook: DevHook | None = None) -> None:
         super().__init__()
+        self._dev_hook = dev_hook
         self.manager = SessionManager()
         self._event_log: dict[str, list[Event]] = defaultdict(list)
         self._selected_session_id: str | None = None
@@ -95,6 +99,8 @@ class ChudApp(App[None]):
         self.query_one(SessionListView).list_view.focus()
         # subscribe and drain events in a background worker
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
+        if self._dev_hook is not None:
+            self.run_worker(self._dev_hook(self), exclusive=False, name="dev-hook")
 
     async def on_unmount(self) -> None:
         await self.manager.shutdown()
@@ -558,13 +564,33 @@ class ChudApp(App[None]):
 
 
 def main() -> int:
+    import argparse
+
+    from chud.dev import SCENARIOS
+
+    parser = argparse.ArgumentParser(prog="chud")
+    parser.add_argument(
+        "--dev",
+        choices=sorted(SCENARIOS.keys()),
+        default=None,
+        help="(pre-release) launch the TUI with a dev scenario on top",
+    )
+    parser.add_argument(
+        "--seed",
+        type=Path,
+        default=None,
+        help="(pre-release) JSON file overriding the default seed for --dev",
+    )
+    args = parser.parse_args()
+
     log_path = state_mod.data_root() / "chud.log"
     logging.basicConfig(
         level=logging.INFO,
         filename=log_path,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    ChudApp().run()
+    dev_hook = SCENARIOS[args.dev](args.seed) if args.dev else None
+    ChudApp(dev_hook=dev_hook).run()
     return 0
 
 
