@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "chud"
-version = "0.0.1"
+dynamic = ["version"]
 description = "TUI for orchestrating multiple Claude Code agents in parallel."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,14 @@ chud = "chud.app:main"
 
 [project.urls]
 Repository = "https://github.com/Nixotica/chud"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+# Writes the resolved version into the package at build time so importlib.metadata
+# and __version__ both report the same string.
+version-file = "src/chud/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chud"]

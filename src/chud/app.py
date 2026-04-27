@@ -593,9 +593,15 @@ class ChudApp(App[None]):
 def main() -> int:
     import argparse
 
+    from chud import __version__
     from chud.dev import SCENARIOS
 
     parser = argparse.ArgumentParser(prog="chud")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--dev",
         choices=sorted(SCENARIOS.keys()),
