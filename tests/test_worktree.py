@@ -96,9 +96,7 @@ def test_attach_repo_branch_uses_configured_prefix(tmp_path: Path, monkeypatch):
 
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt = mgr.attach_repo(repo)

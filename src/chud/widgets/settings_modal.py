@@ -182,11 +182,7 @@ class SettingsModal(ModalScreen[bool]):
         except Exception:
             return
         prefix = sanitize_branch_prefix(prefix_widget.value)
-        example = (
-            f"{prefix}fix-auth-bug-3f9a2c"
-            if include_slug_widget.value
-            else f"{prefix}3f9a2c"
-        )
+        example = f"{prefix}fix-auth-bug-3f9a2c" if include_slug_widget.value else f"{prefix}3f9a2c"
         preview_widget.update(f"[dim]Preview: {example}[/dim]")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -214,9 +210,7 @@ class SettingsModal(ModalScreen[bool]):
         save_user_config(cfg)
 
         try:
-            prefix = sanitize_branch_prefix(
-                self.query_one("#branch-prefix", Input).value
-            )
+            prefix = sanitize_branch_prefix(self.query_one("#branch-prefix", Input).value)
         except Exception:
             prefix = ""
         try:
