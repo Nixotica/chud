@@ -107,6 +107,16 @@ class SessionView(Vertical):
             self.transcript.write(
                 "[bold magenta]── Plan proposed (modal will open) ──[/bold magenta]"
             )
+        elif kind == EventKind.QUESTION_ASKED:
+            qs = (p.get("input") or {}).get("questions") or []
+            first = ""
+            if qs and isinstance(qs[0], dict):
+                first = str(qs[0].get("question") or qs[0].get("header") or "")
+            preview = escape(first[:120]) if first else ""
+            line = "[bold yellow]? agent asked a question[/bold yellow]"
+            if preview:
+                line = f"{line}: {preview}"
+            self.transcript.write(line)
         elif kind == EventKind.NEEDS_USER_INPUT:
             msg = p.get("message") or p.get("reason", "agent waiting")
             self.transcript.write(f"[bold red]? agent needs input: {escape(str(msg))}[/bold red]")

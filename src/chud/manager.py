@@ -31,12 +31,7 @@ class SessionManager:
         self._subscribers: list[asyncio.Queue[Event]] = []
         self._notify_enabled: bool = True
         self._tui_focused: bool = True
-        # Sessions for which we've already fired DONE-side-effects, so re-emitted
-        # STATUS_CHANGED(DONE) events (e.g. after a notification) don't re-trigger.
         self._done_handled: set[str] = set()
-        # Strong refs to in-flight DONE side-effect tasks (PR publish, then
-        # optional cleanup-broadcast) keyed by session id so kill_session can
-        # cancel a session's task in O(1).
         self._pr_tasks: dict[str, asyncio.Task[None]] = {}
 
     # ------------------------------------------------------------------ subscribe
@@ -128,9 +123,6 @@ class SessionManager:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        # Cancel any in-flight DONE side-effect (PR publish + queued cleanup
-        # broadcast) before we tear down the worktree, otherwise rmtree races
-        # with git push.
         if done_task is not None and not done_task.done():
             done_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -202,25 +194,69 @@ class SessionManager:
                 Event(session_id=sid, kind=EventKind.CLEANUP_REQUESTED, payload={})
             )
             return
-        task = asyncio.create_task(
-            self._finish_done(sess.state, do_cleanup), name=f"chud-done-{sid}"
-        )
-        self._pr_tasks[sid] = task
-        task.add_done_callback(lambda _t, s=sid: self._pr_tasks.pop(s, None))
-
-    async def _finish_done(self, state: SessionState, request_cleanup: bool) -> None:
-        # PR publish must complete before cleanup is offered, otherwise the
-        # cleanup modal can race with the still-running git push and the user
-        # ends up with neither a worktree nor a PR.
-        await self._publish_prs(state)
-        if request_cleanup:
-            await self._broadcast(
-                Event(session_id=state.id, kind=EventKind.CLEANUP_REQUESTED, payload={})
+        # Defer the actual publish until the user accepts the proposed
+        # title/body via the PR-review modal. The app responds via
+        # ``submit_pr_review`` which runs the publish-then-cleanup chain.
+        await self._broadcast(
+            Event(
+                session_id=sid,
+                kind=EventKind.PR_REVIEW_REQUESTED,
+                payload={
+                    "title": pr_mod.pick_title(sess.state),
+                    "body": pr_mod.pick_body(sess.state),
+                    "repos": list(sess.state.attached_repos.keys()),
+                },
             )
+        )
 
-    async def _publish_prs(self, state: SessionState) -> None:
+    async def submit_pr_review(
+        self,
+        session_id: str,
+        accepted: bool,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> None:
+        """User response to a ``PR_REVIEW_REQUESTED`` prompt.
+
+        On accept, publish the PR(s) with the (possibly edited) title/body.
+        On reject, skip the publish. Either way, if the session opted into
+        self-cleanup, broadcast ``CLEANUP_REQUESTED`` *after* the publish has
+        finished, preserving the same ordering guarantee that protected the
+        old auto-publish path.
+        """
+        sess = self.sessions.get(session_id)
+        if sess is None:
+            return
+        opts = sess.state.options or {}
+        do_cleanup = bool(opts.get(OPT_SELF_CLEANUP))
+
+        async def runner(state: SessionState = sess.state) -> None:
+            if accepted:
+                await self._publish_prs(state, title=title, body=body)
+            if do_cleanup:
+                await self._broadcast(
+                    Event(
+                        session_id=state.id,
+                        kind=EventKind.CLEANUP_REQUESTED,
+                        payload={},
+                    )
+                )
+
+        # Reuse the same task-tracking slot so kill_session cancels an
+        # in-flight publish-then-cleanup chain in O(1), exactly like the
+        # legacy ``_finish_done`` task did.
+        task = asyncio.create_task(runner(), name=f"chud-pr-review-{session_id}")
+        self._pr_tasks[session_id] = task
+        task.add_done_callback(lambda _t, s=session_id: self._pr_tasks.pop(s, None))
+
+    async def _publish_prs(
+        self,
+        state: SessionState,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> None:
         try:
-            results = await pr_mod.publish_draft_prs(state)
+            results = await pr_mod.publish_draft_prs(state, title=title, body=body)
         except Exception as e:
             log.exception("publish_draft_prs crashed for session %s", state.id)
             await self._broadcast(
@@ -232,17 +268,13 @@ class SessionManager:
             )
             return
         wt_mgr = self.worktrees.get(state.id)
-        any_discarded = False
+        any_discarded_branches = False
         for r in results:
             if r.discarded:
-                # Branch is genuinely empty (clean worktree, no commits ahead
-                # of base). Drop the worktree + branch ref silently — no
-                # PR_FAILED toast — so unused multi-repo attachments and
-                # plan-only sessions don't spam the UI.
                 if wt_mgr is not None and r.repo_label:
                     try:
                         wt_mgr.discard_empty_branch(r.repo_label)
-                        any_discarded = True
+                        any_discarded_branches = True
                     except Exception:
                         log.exception(
                             "discard_empty_branch failed for %s in session %s",
@@ -280,9 +312,7 @@ class SessionManager:
                         },
                     )
                 )
-        # discard_empty_branch mutates state.attached_repos — persist so the
-        # on-disk session record reflects the now-detached worktrees.
-        if any_discarded:
+        if any_discarded_branches:
             self._persist()
 
     # ------------------------------------------------------------------ persistence

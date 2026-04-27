@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -18,12 +20,16 @@ from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
+from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
 log = logging.getLogger(__name__)
 
-PromptKind = Literal["plan", "cleanup", "input"]
+PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
+
+DevHook = Callable[["ChudApp"], Awaitable[None]]
 
 
 @dataclass
@@ -62,13 +68,16 @@ class ChudApp(App[None]):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dev_hook: DevHook | None = None) -> None:
         super().__init__()
+        self._dev_hook = dev_hook
         self.manager = SessionManager()
         self._event_log: dict[str, list[Event]] = defaultdict(list)
         self._selected_session_id: str | None = None
         self._open_plan_modals: set[str] = set()
         self._open_cleanup_modals: set[str] = set()
+        self._open_pr_review_modals: set[str] = set()
+        self._open_question_modals: set[str] = set()
         # FIFO queue of blocking user-input requests from agents. The first
         # request is shown until resolved; later requests wait their turn so a
         # newly-arrived modal can't cover one the user hasn't answered yet.
@@ -87,8 +96,11 @@ class ChudApp(App[None]):
     async def on_mount(self) -> None:
         self.manager.set_focus(True)
         self.query_one(SessionView).show_session(None)
+        self.query_one(SessionListView).list_view.focus()
         # subscribe and drain events in a background worker
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
+        if self._dev_hook is not None:
+            self.run_worker(self._dev_hook(self), exclusive=False, name="dev-hook")
 
     async def on_unmount(self) -> None:
         await self.manager.shutdown()
@@ -155,6 +167,14 @@ class ChudApp(App[None]):
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if isinstance(event.item, SessionRow):
             self._select_session(event.item.session_id)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Enter on a sidebar row drops focus into the message input."""
+        if isinstance(event.item, SessionRow):
+            self._select_session(event.item.session_id)
+            # Best-effort focus; mirrors the pattern in _show_input_focus.
+            with contextlib.suppress(Exception):
+                self.query_one(SessionView).input.focus()
 
     def _select_session(self, sid: str) -> None:
         self._selected_session_id = sid
@@ -243,6 +263,26 @@ class ChudApp(App[None]):
                     payload={"plan": event.payload.get("plan", "")},
                 )
             )
+        elif event.kind == EventKind.PR_REVIEW_REQUESTED:
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="pr_review",
+                    payload={
+                        "title": event.payload.get("title", ""),
+                        "body": event.payload.get("body", ""),
+                        "repos": list(event.payload.get("repos", []) or []),
+                    },
+                )
+            )
+        elif event.kind == EventKind.QUESTION_ASKED:
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="question",
+                    payload={"input": event.payload.get("input", {})},
+                )
+            )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
             self._enqueue_prompt(
                 PromptRequest(session_id=event.session_id, kind="cleanup")
@@ -275,10 +315,6 @@ class ChudApp(App[None]):
                 f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
             )
         elif event.kind == EventKind.WORKTREE_DISCARDED:
-            # Silent on purpose: a worktree the agent never touched isn't a
-            # failure, just absence of work. Drop a muted transcript line so
-            # the discard is auditable, but no notify() — this is the whole
-            # reason the discard path exists (vs the old PR_FAILED toast).
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
             view = self.query_one(SessionView)
@@ -324,10 +360,14 @@ class ChudApp(App[None]):
             self._prompt_active = req
             if req.kind == "plan":
                 self._show_plan_modal(req)
+            elif req.kind == "pr_review":
+                self._show_pr_review_modal(req)
             elif req.kind == "cleanup":
                 self._show_cleanup_modal(req)
             elif req.kind == "input":
                 self._show_input_focus(req)
+            elif req.kind == "question":
+                self._show_question_modal(req)
             return
 
     def _resolve_active_prompt(self, req: PromptRequest) -> None:
@@ -432,6 +472,83 @@ class ChudApp(App[None]):
 
         self.run_worker(show_modal(), exclusive=False)
 
+    def _show_pr_review_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        if session_id in self._open_pr_review_modals:
+            self._resolve_active_prompt(req)
+            return
+        if self.manager.sessions.get(session_id) is None:
+            self._resolve_active_prompt(req)
+            return
+        self._open_pr_review_modals.add(session_id)
+        title = str(req.payload.get("title", "") or "")
+        body = str(req.payload.get("body", "") or "")
+        repos = list(req.payload.get("repos", []) or [])
+
+        async def show_modal() -> None:
+            try:
+                result: PRReviewResult | None = await self.push_screen_wait(
+                    PRReviewModal(
+                        session_id=session_id,
+                        title=title,
+                        body=body,
+                        repos=repos,
+                    )
+                )
+                # ``None`` (e.g. unexpected dismissal) is treated as a reject so
+                # the post-PR cleanup prompt — if enabled — still progresses.
+                if result is None:
+                    accepted = False
+                    edited_title: str | None = None
+                    edited_body: str | None = None
+                else:
+                    accepted = result.accepted
+                    edited_title = result.title
+                    edited_body = result.body
+                try:
+                    await self.manager.submit_pr_review(
+                        session_id,
+                        accepted=accepted,
+                        title=edited_title,
+                        body=edited_body,
+                    )
+                except Exception as e:
+                    log.exception("submit_pr_review failed for %s", session_id)
+                    self.notify(f"PR review failed: {e}", severity="error")
+            finally:
+                self._open_pr_review_modals.discard(session_id)
+                self._resolve_active_prompt(req)
+
+        self.run_worker(show_modal(), exclusive=False)
+
+    def _show_question_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        question_input = req.payload.get("input", {}) or {}
+        if session_id in self._open_question_modals:
+            self._resolve_active_prompt(req)
+            return
+        self._open_question_modals.add(session_id)
+
+        async def show_modal() -> None:
+            try:
+                result = await self.push_screen_wait(
+                    QuestionModal(session_id=session_id, question_input=question_input)
+                )
+                sess = self.manager.sessions.get(session_id)
+                if sess is None:
+                    return
+                if isinstance(result, str) and result:
+                    await sess.answer_question(result)
+                else:
+                    await sess.answer_question(
+                        "(user dismissed the question without answering)"
+                    )
+            finally:
+                self._open_question_modals.discard(session_id)
+                self._resolve_active_prompt(req)
+
+        self.run_worker(show_modal(), exclusive=False)
+
     def _show_input_focus(self, req: PromptRequest) -> None:
         """Auto-select the asking session and focus the input box.
 
@@ -442,21 +559,38 @@ class ChudApp(App[None]):
             self._resolve_active_prompt(req)
             return
         self._select_session(req.session_id)
-        try:
+        with contextlib.suppress(Exception):
             self.query_one(SessionView).input.focus()
-        except Exception:
-            # Focusing is best-effort; the prompt is still considered "shown".
-            pass
 
 
 def main() -> int:
+    import argparse
+
+    from chud.dev import SCENARIOS
+
+    parser = argparse.ArgumentParser(prog="chud")
+    parser.add_argument(
+        "--dev",
+        choices=sorted(SCENARIOS.keys()),
+        default=None,
+        help="(pre-release) launch the TUI with a dev scenario on top",
+    )
+    parser.add_argument(
+        "--seed",
+        type=Path,
+        default=None,
+        help="(pre-release) JSON file overriding the default seed for --dev",
+    )
+    args = parser.parse_args()
+
     log_path = state_mod.data_root() / "chud.log"
     logging.basicConfig(
         level=logging.INFO,
         filename=log_path,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    ChudApp().run()
+    dev_hook = SCENARIOS[args.dev](args.seed) if args.dev else None
+    ChudApp(dev_hook=dev_hook).run()
     return 0
 
 
