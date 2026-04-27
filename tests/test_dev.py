@@ -41,3 +41,10 @@ def test_load_seed_raises_on_malformed_json(tmp_path: Path) -> None:
     bad.write_text("{not json")
     with pytest.raises(json.JSONDecodeError):
         _load_seed(bad, default=tmp_path / "absent.json")
+
+
+def test_focus_input_factory_builds_without_seed() -> None:
+    from chud.dev import make_focus_input_hook
+
+    hook = make_focus_input_hook(None)
+    assert callable(hook)
