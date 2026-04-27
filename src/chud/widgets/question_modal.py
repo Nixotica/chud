@@ -8,50 +8,11 @@ from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.content import Content
 from textual.screen import ModalScreen
-from textual.style import Style
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
+from textual.widgets import Button, Checkbox, Input, RadioSet, Static
 
-
-def _toggle_button_with_off_glyph(self: Checkbox | RadioButton) -> Content:
-    """Render the toggle button cell, swapping glyph by ``self.value``.
-
-    Textual 8.x's default ``ToggleButton._button`` renders ``BUTTON_INNER``
-    in both states and only flips its colour. We want a different character
-    per state — ✓ when on, ``BUTTON_INNER_OFF`` when off — so we recreate
-    the assembly with a value-dependent inner.
-    """
-    button_style = self.get_visual_style("toggle--button")
-    side_style = Style(
-        foreground=button_style.background,
-        background=self.background_colors[1],
-    )
-    inner = self.BUTTON_INNER if self.value else self.BUTTON_INNER_OFF
-    return Content.assemble(
-        (self.BUTTON_LEFT, side_style),
-        (inner, button_style),
-        (self.BUTTON_RIGHT, side_style),
-    )
-
-
-class _CheckMarkBox(Checkbox):
-    BUTTON_INNER = "✓"
-    BUTTON_INNER_OFF = "X"
-
-    @property
-    def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self)
-
-
-class _CheckMarkRadio(RadioButton):
-    BUTTON_INNER = "✓"
-    BUTTON_INNER_OFF = "●"
-
-    @property
-    def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self)
+from chud.widgets.check_mark_toggles import CheckMarkBox, CheckMarkRadio
 
 
 class QuestionModal(ModalScreen[str | None]):
@@ -193,12 +154,12 @@ class QuestionModal(ModalScreen[str | None]):
                     if multi:
                         for opt_idx, opt in enumerate(options):
                             label = _format_option(opt)
-                            yield _CheckMarkBox(label, id=f"q{idx}-opt{opt_idx}")
+                            yield CheckMarkBox(label, id=f"q{idx}-opt{opt_idx}")
                     else:
                         with RadioSet(id=f"q{idx}-radio"):
                             for opt_idx, opt in enumerate(options):
                                 label = _format_option(opt)
-                                yield _CheckMarkRadio(label, id=f"q{idx}-opt{opt_idx}")
+                                yield CheckMarkRadio(label, id=f"q{idx}-opt{opt_idx}")
             yield Input(
                 placeholder="Other / free-text answer (optional)…",
                 id="other-input",

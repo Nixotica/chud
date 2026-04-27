@@ -13,6 +13,7 @@ from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
 from chud.options import SESSION_OPTIONS
 from chud.state import get_recent_repo_paths, save_user_config, user_default_options
+from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
 @dataclass
@@ -127,7 +128,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
             with VerticalScroll(id="options-group"):
                 yield Label("Options")
                 for opt in SESSION_OPTIONS:
-                    yield Checkbox(
+                    yield CheckMarkBox(
                         opt.label,
                         value=defaults[opt.id],
                         id=f"opt-{opt.id}",

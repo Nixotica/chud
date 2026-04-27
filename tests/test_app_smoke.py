@@ -277,6 +277,35 @@ async def test_new_session_modal_renders_with_recent_repo_suggestions(monkeypatc
         _force_render(modal)
 
 
+async def test_new_session_modal_options_render_checkmark_glyph():
+    """Options must render with ✓/X glyphs (not just colour shifts).
+
+    Regression guard: if anyone swaps ``CheckMarkBox`` back to a plain
+    ``Checkbox`` or breaks the ``_button`` override, on/off would render
+    indistinguishable inner characters and this test would fail.
+    """
+    from chud.widgets.check_mark_toggles import CheckMarkBox
+
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal())
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        boxes = list(modal.query(CheckMarkBox))
+        assert boxes, "expected at least one CheckMarkBox option"
+        box = boxes[0]
+        box.value = False
+        await pilot.pause()
+        off_render = str(box._button)
+        assert "X" in off_render and "✓" not in off_render
+        box.value = True
+        await pilot.pause()
+        on_render = str(box._button)
+        assert "✓" in on_render and "X" not in on_render
+
+
 async def test_attach_repo_modal_mounts_and_renders():
     app = ChudApp()
     async with app.run_test() as pilot:
