@@ -1,0 +1,56 @@
+name: Release (unstable)
+
+on:
+  push:
+    branches:
+      - main
+      - agentnix/7ca95941
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(ls dist/*.whl | head -n1 | sed -E 's|.*/chud-([^-]+)-.*|\1|')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=unstable-$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "chud ${{ steps.version.outputs.version }} (unstable)"
+          prerelease: true
+          files: dist/*
+          body: |
+            Automated unstable build from `${{ github.ref_name }}` @ `${{ github.sha }}`.
+
+            Install:
+            ```
+            pip install https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/chud-${{ steps.version.outputs.version }}-py3-none-any.whl
+            ```
