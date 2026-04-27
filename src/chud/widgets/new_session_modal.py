@@ -12,7 +12,7 @@ from textual.suggester import SuggestFromList
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
 from chud.options import SESSION_OPTIONS
-from chud.state import get_recent_repo_paths, save_user_config, user_default_options
+from chud.state import get_recent_repo_paths, user_default_options
 
 
 @dataclass
@@ -135,23 +135,13 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                     )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
-                yield Button("Save as defaults", id="save-defaults")
                 yield Button("Start (F2)", id="start", variant="success")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
-        elif event.button.id == "save-defaults":
-            self._save_defaults()
         elif event.button.id == "start":
             self._submit()
-
-    def _save_defaults(self) -> None:
-        options = {
-            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
-        }
-        save_user_config(options)
-        self.app.notify("Saved as defaults.")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
