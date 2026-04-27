@@ -298,7 +298,15 @@ class ChudApp(App[None]):
                 )
             )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
-            self._enqueue_prompt(PromptRequest(session_id=event.session_id, kind="cleanup"))
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="cleanup",
+                    payload={
+                        "published_prs": list(event.payload.get("published_prs", []) or []),
+                    },
+                )
+            )
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             self._enqueue_prompt(
                 PromptRequest(
@@ -452,10 +460,13 @@ class ChudApp(App[None]):
             return
         self._open_cleanup_modals.add(session_id)
         state = sess.state
+        published_prs = list(req.payload.get("published_prs", []) or [])
 
         async def show_modal() -> None:
             try:
-                confirmed = await self.push_screen_wait(CleanupConfirmationModal(state=state))
+                confirmed = await self.push_screen_wait(
+                    CleanupConfirmationModal(state=state, published_prs=published_prs)
+                )
                 if not confirmed:
                     return
                 await self.manager.kill_session(session_id, cleanup_workspace=True)
