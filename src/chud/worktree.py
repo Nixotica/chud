@@ -66,6 +66,20 @@ def repo_toplevel(path: Path) -> Path:
     return Path(result.stdout.strip())
 
 
+def detect_cwd_repo() -> Path | None:
+    """Toplevel of the git repo containing the current working directory.
+
+    Returns ``None`` if CWD is not inside a git repo, if git isn't on PATH,
+    or if CWD itself isn't a real directory anymore. Used by the new-session
+    flow to auto-attach the obvious repo without making the user type its
+    path.
+    """
+    try:
+        return repo_toplevel(Path.cwd())
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+
+
 class WorktreeManager:
     """Per-session manager for the workspace dir and N attached worktrees."""
 

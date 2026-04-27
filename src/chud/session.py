@@ -27,6 +27,7 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
+from chud.tools import AttachCallback, build_chud_mcp_server
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
 log = logging.getLogger(__name__)
@@ -48,9 +49,13 @@ class AgentSession:
         state: SessionState,
         *,
         model: str | None = None,
+        launch_cwd: Path | None = None,
+        attach_callback: AttachCallback | None = None,
     ) -> None:
         self.state = state
         self.model = model
+        self._launch_cwd = launch_cwd
+        self._attach_callback = attach_callback
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -73,13 +78,29 @@ class AgentSession:
         self.state.initial_prompt = prompt
 
         # If exactly one repo is attached, run the agent inside that worktree so
-        # its tools see a real git checkout. With 0 or 2+ repos, fall back to
-        # the workspace root: 0 repos = scratch dir for non-repo work; 2+ repos
-        # = parent of all worktree subdirs so the agent can `cd` between them.
+        # its tools see a real git checkout. With 0 attached repos, prefer the
+        # user's launch directory (so the agent can `ls` and discover sibling
+        # repos to attach via mcp__chud__attach_repo); fall back to the
+        # workspace root when no launch dir was provided. With 2+ repos, use
+        # the workspace root so the agent can `cd` between worktree subdirs.
         attached = list(self.state.attached_repos.values())
-        cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
+        if len(attached) == 1:
+            cwd = attached[0].worktree_path
+        elif len(attached) == 0 and self._launch_cwd is not None:
+            cwd = self._launch_cwd
+        else:
+            cwd = self.state.workspace_dir
 
-        options = ClaudeAgentOptions(
+        # Per-session in-process MCP server exposing chud-native tools to the
+        # agent (e.g. attach_repo). Skipped when no callback was wired in so
+        # tests/standalone uses don't pay for an unused server.
+        mcp_servers: dict[str, Any] = {}
+        allowed_extras: list[str] = []
+        if self._attach_callback is not None:
+            mcp_servers["chud"] = build_chud_mcp_server(self._attach_callback)
+            allowed_extras.append("mcp__chud__attach_repo")
+
+        options_kwargs: dict[str, Any] = dict(
             cwd=cwd,
             permission_mode="plan",
             can_use_tool=self._on_tool_request,
@@ -89,6 +110,13 @@ class AgentSession:
             },
             model=self.model,
         )
+        if mcp_servers:
+            options_kwargs["mcp_servers"] = mcp_servers
+            # Setting allowed_tools restricts the model to that list, so we
+            # only set it when we actually need to allow our extras through.
+            options_kwargs["allowed_tools"] = allowed_extras
+
+        options = ClaudeAgentOptions(**options_kwargs)
 
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()

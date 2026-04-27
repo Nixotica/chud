@@ -24,6 +24,7 @@ from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
 from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
+from chud.worktree import detect_cwd_repo
 
 log = logging.getLogger(__name__)
 
@@ -131,10 +132,17 @@ class ChudApp(App[None]):
             self._maybe_show_next_prompt()
         if result is None:
             return
+        # Auto-detect: if chud was launched inside a git repo, attach it.
+        # Otherwise pass the launch dir as ``launch_cwd`` so the agent runs
+        # there and can use ``mcp__chud__attach_repo`` to attach repos it
+        # discovers.
+        detected = detect_cwd_repo()
+        launch = None if detected is not None else Path.cwd()
         try:
             sess = await self.manager.create_session(
                 prompt=result.prompt,
-                repo_path=result.repo_path,
+                repo_path=detected,
+                launch_cwd=launch,
                 options=result.options,
             )
         except Exception as e:
