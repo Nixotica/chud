@@ -22,6 +22,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from chud.settings import render_pr_body_footer
 from chud.types import SessionState
 
 log = logging.getLogger(__name__)
@@ -205,11 +206,14 @@ def _title_from_prompt(prompt: str) -> str:
 
 
 def _body_from_prompt(session_id: str, prompt: str) -> str:
-    """Fallback body when no approved plan is available."""
-    return (
-        f"Draft PR opened by chud session `{session_id}`.\n\n"
-        f"Initial prompt:\n\n```\n{prompt}\n```\n"
-    )
+    """Fallback body when no approved plan is available.
+
+    The lead line is the user-configurable PR body footer template (default
+    matches the legacy ``*Draft PR opened by chud session ...*`` blurb), so
+    a custom template applies here too.
+    """
+    footer = render_pr_body_footer(session_id)
+    return f"{footer}\n\nInitial prompt:\n\n```\n{prompt}\n```\n"
 
 
 def pick_title(state: SessionState) -> str:
@@ -229,7 +233,8 @@ def pick_body(state: SessionState) -> str:
     if state.approved_plan:
         context = _extract_plan_context(state.approved_plan)
         if context:
-            return f"{context}\n\n---\n*Draft PR opened by chud session `{state.id}`.*\n"
+            footer = render_pr_body_footer(state.id)
+            return f"{context}\n\n---\n{footer}\n"
     return _body_from_prompt(state.id, state.initial_prompt)
 
 

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from chud.settings import get_branch_prefix, get_include_slug
 from chud.types import SessionState, Worktree
 
 log = logging.getLogger(__name__)
@@ -94,8 +95,12 @@ class WorktreeManager:
             i += 1
 
         worktree_path = self.session.workspace_dir / wt_dir_name
-        slug = _slugify(self.session.initial_prompt) or "session"
-        branch = f"chud/{slug}-{self.session.id}"
+        prefix = get_branch_prefix()
+        if get_include_slug():
+            slug = _slugify(self.session.initial_prompt) or "session"
+            branch = f"{prefix}{slug}-{self.session.id}"
+        else:
+            branch = f"{prefix}{self.session.id}"
 
         branch_exists = (
             subprocess.run(

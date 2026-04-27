@@ -24,6 +24,7 @@ from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
 from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
+from chud.widgets.settings_modal import SettingsModal
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class ChudApp(App[None]):
         ("n", "new_session", "New session"),
         ("a", "attach_repo", "Attach repo"),
         ("k", "kill_session", "Kill session"),
+        ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
     ]
 
@@ -164,6 +166,20 @@ class ChudApp(App[None]):
             await self.manager.attach_repo(sid, repo)
         except Exception as e:
             self.notify(f"attach_repo failed: {e}", severity="error")
+
+    def action_settings(self) -> None:
+        self.run_worker(self._settings_flow(), exclusive=False)
+
+    async def _settings_flow(self) -> None:
+        # Treat the settings modal like NewSession/AttachRepo: bump the user
+        # modal depth so any session-driven prompt (PLAN, CLEANUP, etc.) waits
+        # in the FIFO queue instead of popping over the modal mid-edit.
+        self._user_modal_depth += 1
+        try:
+            await self.push_screen_wait(SettingsModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
 
     async def action_kill_session(self) -> None:
         sid = self._selected_session_id

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from platformdirs import user_data_dir
 
@@ -44,8 +45,14 @@ def save_all(sessions: dict[str, SessionState]) -> None:
     tmp.replace(path)
 
 
-def load_user_config() -> dict[str, bool]:
-    """Load persisted user defaults; return {} if missing or unreadable."""
+def load_user_config() -> dict[str, Any]:
+    """Load persisted user defaults; return {} if missing or unreadable.
+
+    Values may be ``bool`` (per-session option toggles, see ``options.py``) or
+    other JSON-native types like ``str`` (settings such as ``branch_prefix``,
+    see ``settings.py``). Callers are responsible for type-checking individual
+    keys.
+    """
     path = config_file()
     if not path.exists():
         return {}
@@ -56,7 +63,8 @@ def load_user_config() -> dict[str, bool]:
     return raw if isinstance(raw, dict) else {}
 
 
-def save_user_config(options: dict[str, bool]) -> None:
+def save_user_config(options: dict[str, Any]) -> None:
+    """Persist ``options`` as the user's full config snapshot (atomic write)."""
     path = config_file()
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(options, indent=2))
