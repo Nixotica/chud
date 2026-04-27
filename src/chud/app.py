@@ -83,6 +83,10 @@ class ChudApp(App[None]):
         # newly-arrived modal can't cover one the user hasn't answered yet.
         self._prompt_queue: list[PromptRequest] = []
         self._prompt_active: PromptRequest | None = None
+        # Number of user-initiated modals currently on screen (NewSession,
+        # AttachRepo). While > 0, session-driven prompts stay queued so they
+        # can't pop over a modal the user is actively typing into.
+        self._user_modal_depth: int = 0
 
     # ------------------------------------------------------------------ layout
 
@@ -119,7 +123,12 @@ class ChudApp(App[None]):
         self.run_worker(self._new_session_flow(), exclusive=False)
 
     async def _new_session_flow(self) -> None:
-        result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
+        self._user_modal_depth += 1
+        try:
+            result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
         if result is None:
             return
         try:
@@ -143,7 +152,12 @@ class ChudApp(App[None]):
         if sid is None:
             self.notify("No session selected.", severity="warning")
             return
-        repo: Path | None = await self.push_screen_wait(AttachRepoModal())
+        self._user_modal_depth += 1
+        try:
+            repo: Path | None = await self.push_screen_wait(AttachRepoModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
         if repo is None:
             return
         try:
@@ -351,6 +365,11 @@ class ChudApp(App[None]):
     def _maybe_show_next_prompt(self) -> None:
         """If nothing is currently shown, pop the next request and show it."""
         if self._prompt_active is not None:
+            return
+        if self._user_modal_depth > 0:
+            # A user-initiated modal (NewSession/AttachRepo) is on screen;
+            # don't pop a session-driven prompt over it. The flow that closes
+            # the user modal calls back into us once it's gone.
             return
         # Skip requests for sessions that no longer exist (killed mid-queue).
         while self._prompt_queue:
