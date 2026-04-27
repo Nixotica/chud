@@ -104,16 +104,12 @@ class AgentSession:
         # logs "Error in hook callback hook_0: Stream closed" when its control
         # request can't reach us.
         if self._plan_decision is not None and not self._plan_decision.done():
-            self._plan_decision.set_result(
-                PermissionResultDeny(message="Session stopped.")
-            )
+            self._plan_decision.set_result(PermissionResultDeny(message="Session stopped."))
         self._plan_decision = None
         self._pending_plan_text = None
 
         if self._question_decision is not None and not self._question_decision.done():
-            self._question_decision.set_result(
-                PermissionResultDeny(message="Session stopped.")
-            )
+            self._question_decision.set_result(PermissionResultDeny(message="Session stopped."))
         self._question_decision = None
         self._pending_question_input = None
 

@@ -123,9 +123,7 @@ class WorktreeManager:
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise WorktreeError(
-                f"git worktree add failed for {toplevel}: {result.stderr.strip()}"
-            )
+            raise WorktreeError(f"git worktree add failed for {toplevel}: {result.stderr.strip()}")
 
         wt = Worktree(repo_path=toplevel, worktree_path=worktree_path, branch=branch)
         self.session.attached_repos[repo_key] = wt
@@ -142,8 +140,7 @@ class WorktreeManager:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 and not force:
             raise WorktreeError(
-                f"git worktree remove failed: {result.stderr.strip()} "
-                f"(pass force=True to discard)"
+                f"git worktree remove failed: {result.stderr.strip()} (pass force=True to discard)"
             )
 
         del self.session.attached_repos[repo_key]
@@ -175,9 +172,7 @@ class WorktreeManager:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "not found" not in stderr.lower():
-                log.warning(
-                    "git branch -D %s failed in %s: %s", branch, repo_path, stderr
-                )
+                log.warning("git branch -D %s failed in %s: %s", branch, repo_path, stderr)
 
     def cleanup_workspace(self) -> None:
         """Remove all attached worktrees and the workspace dir. Destructive."""

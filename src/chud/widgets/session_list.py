@@ -31,11 +31,7 @@ STATUS_STYLE: dict[SessionStatus, str] = {
 def _render_text(state: SessionState) -> Text:
     glyph = STATUS_GLYPH[state.status]
     style = STATUS_STYLE[state.status]
-    prompt = (
-        state.initial_prompt.strip().splitlines()[0]
-        if state.initial_prompt
-        else "(no prompt)"
-    )
+    prompt = state.initial_prompt.strip().splitlines()[0] if state.initial_prompt else "(no prompt)"
     prompt = prompt[:32] + ("…" if len(prompt) > 32 else "")
     repos = len(state.attached_repos)
     repo_chip = f" [{repos}r]" if repos else ""

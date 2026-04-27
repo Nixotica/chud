@@ -79,9 +79,7 @@ async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
         env=_no_prompt_env(),
     )
     try:
-        out_b, err_b = await asyncio.wait_for(
-            proc.communicate(), timeout=_RUN_TIMEOUT_S
-        )
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=_RUN_TIMEOUT_S)
     except asyncio.TimeoutError:
         log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
         with contextlib.suppress(ProcessLookupError):
@@ -127,9 +125,7 @@ async def _is_dirty(worktree: Path) -> bool:
     return bool(out.strip())
 
 
-async def _auto_commit(
-    worktree: Path, title: str, body: str
-) -> tuple[bool, str]:
+async def _auto_commit(worktree: Path, title: str, body: str) -> tuple[bool, str]:
     """Stage and commit every change in ``worktree`` under one chud commit.
 
     The Claude SDK in ``acceptEdits`` mode edits files but never commits, so
@@ -146,9 +142,7 @@ async def _auto_commit(
     rc, _, err = await _run(["git", "add", "-A"], cwd=worktree)
     if rc != 0:
         return False, err or "git add failed"
-    rc, _, err = await _run(
-        ["git", "commit", "-m", title, "-m", body], cwd=worktree
-    )
+    rc, _, err = await _run(["git", "commit", "-m", title, "-m", body], cwd=worktree)
     if rc != 0:
         return False, err or "git commit failed"
     return True, ""
@@ -298,9 +292,7 @@ async def publish_draft_prs(
             # We just confirmed clean (no dirty edits) AND no commits ahead
             # of base — this branch is genuinely abandoned. Mark it for
             # silent cleanup rather than emitting a noisy PR_FAILED toast.
-            results.append(
-                PRResult(repo_label=label, branch=branch, discarded=True)
-            )
+            results.append(PRResult(repo_label=label, branch=branch, discarded=True))
             continue
 
         rc, _, err = await _run(
