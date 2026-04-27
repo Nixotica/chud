@@ -95,9 +95,7 @@ def test_sanitize_branch_prefix_allows_empty():
 
 def test_render_pr_body_footer_substitutes_session_id(tmp_path, monkeypatch):
     _redirect_config(tmp_path, monkeypatch)
-    settings_mod.save_settings(
-        {settings_mod.KEY_PR_BODY_FOOTER: "session={session_id}"}
-    )
+    settings_mod.save_settings({settings_mod.KEY_PR_BODY_FOOTER: "session={session_id}"})
     assert settings_mod.render_pr_body_footer("abc123") == "session=abc123"
 
 

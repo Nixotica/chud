@@ -143,9 +143,7 @@ def test_pick_body_falls_back_when_plan_missing_context():
 
 def test_pick_body_uses_configured_footer_template(monkeypatch):
     """A custom ``pr_body_footer`` setting flows into the rendered body."""
-    monkeypatch.setattr(
-        pr_mod, "render_pr_body_footer", lambda sid: f"<<chud:{sid}>>"
-    )
+    monkeypatch.setattr(pr_mod, "render_pr_body_footer", lambda sid: f"<<chud:{sid}>>")
     plan = "# Title\n\n## Context\n\nReasons.\n\n## Approach\n\nDo X.\n"
     s = _state_with_one_repo(approved_plan=plan)
     body = pr_mod._pick_body(s)
@@ -155,9 +153,7 @@ def test_pick_body_uses_configured_footer_template(monkeypatch):
 
 
 def test_body_from_prompt_uses_configured_footer_template(monkeypatch):
-    monkeypatch.setattr(
-        pr_mod, "render_pr_body_footer", lambda sid: f"FOOTER[{sid}]"
-    )
+    monkeypatch.setattr(pr_mod, "render_pr_body_footer", lambda sid: f"FOOTER[{sid}]")
     body = pr_mod._body_from_prompt("xyz", "do the thing")
     assert body.startswith("FOOTER[xyz]")
     assert "do the thing" in body
