@@ -148,8 +148,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
 
     def _save_defaults(self) -> None:
         options = {
-            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
-            for opt in SESSION_OPTIONS
+            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
         }
         save_user_config(options)
         self.app.notify("Saved as defaults.")
@@ -170,9 +169,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
             return
         repo_path = Path(repo_str).expanduser() if repo_str else None
         options = {
-            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value
-            for opt in SESSION_OPTIONS
+            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
         }
-        self.dismiss(
-            NewSessionResult(repo_path=repo_path, prompt=prompt, options=options)
-        )
+        self.dismiss(NewSessionResult(repo_path=repo_path, prompt=prompt, options=options))

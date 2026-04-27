@@ -111,9 +111,7 @@ class SessionManager:
         for sid in list(self.sessions):
             await self.kill_session(sid)
 
-    async def kill_session(
-        self, session_id: str, cleanup_workspace: bool = False
-    ) -> None:
+    async def kill_session(self, session_id: str, cleanup_workspace: bool = False) -> None:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
         wt_mgr = self.worktrees.pop(session_id, None)

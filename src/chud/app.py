@@ -298,9 +298,7 @@ class ChudApp(App[None]):
                 )
             )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
-            self._enqueue_prompt(
-                PromptRequest(session_id=event.session_id, kind="cleanup")
-            )
+            self._enqueue_prompt(PromptRequest(session_id=event.session_id, kind="cleanup"))
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             self._enqueue_prompt(
                 PromptRequest(
@@ -317,17 +315,13 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
-            view.transcript.write(
-                f"[bold green]+ draft PR:[/bold green] {repo} → {url}"
-            )
+            view.transcript.write(f"[bold green]+ draft PR:[/bold green] {repo} → {url}")
         elif event.kind == EventKind.PR_FAILED:
             err = event.payload.get("error", "")
             repo = event.payload.get("repo", "")
             self.notify(f"PR failed ({repo}): {err}", severity="error")
             view = self.query_one(SessionView)
-            view.transcript.write(
-                f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
-            )
+            view.transcript.write(f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}")
         elif event.kind == EventKind.WORKTREE_DISCARDED:
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
@@ -354,10 +348,7 @@ class ChudApp(App[None]):
             and self._prompt_active.kind == req.kind
         ):
             return
-        if any(
-            p.session_id == req.session_id and p.kind == req.kind
-            for p in self._prompt_queue
-        ):
+        if any(p.session_id == req.session_id and p.kind == req.kind for p in self._prompt_queue):
             return
         self._prompt_queue.append(req)
         self._maybe_show_next_prompt()
@@ -401,21 +392,15 @@ class ChudApp(App[None]):
 
     def _drop_session_prompts(self, session_id: str) -> None:
         """Remove any queued/active prompts for a session that's going away."""
-        self._prompt_queue = [
-            p for p in self._prompt_queue if p.session_id != session_id
-        ]
-        if (
-            self._prompt_active is not None
-            and self._prompt_active.session_id == session_id
-        ):
+        self._prompt_queue = [p for p in self._prompt_queue if p.session_id != session_id]
+        if self._prompt_active is not None and self._prompt_active.session_id == session_id:
             self._prompt_active = None
             self._maybe_show_next_prompt()
 
     def _drop_session_input_prompts(self, session_id: str) -> None:
         """Clear stale 'input' prompts when a session leaves AWAITING_USER."""
         self._prompt_queue = [
-            p for p in self._prompt_queue
-            if not (p.session_id == session_id and p.kind == "input")
+            p for p in self._prompt_queue if not (p.session_id == session_id and p.kind == "input")
         ]
         if (
             self._prompt_active is not None
@@ -470,9 +455,7 @@ class ChudApp(App[None]):
 
         async def show_modal() -> None:
             try:
-                confirmed = await self.push_screen_wait(
-                    CleanupConfirmationModal(state=state)
-                )
+                confirmed = await self.push_screen_wait(CleanupConfirmationModal(state=state))
                 if not confirmed:
                     return
                 await self.manager.kill_session(session_id, cleanup_workspace=True)
@@ -559,9 +542,7 @@ class ChudApp(App[None]):
                 if isinstance(result, str) and result:
                     await sess.answer_question(result)
                 else:
-                    await sess.answer_question(
-                        "(user dismissed the question without answering)"
-                    )
+                    await sess.answer_question("(user dismissed the question without answering)")
             finally:
                 self._open_question_modals.discard(session_id)
                 self._resolve_active_prompt(req)

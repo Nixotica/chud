@@ -55,8 +55,7 @@ class _CheckMarkRadio(RadioButton):
 
 
 class QuestionModal(ModalScreen[str | None]):
-    """Render an AskUserQuestion tool call and collect the user's answer.
-    """
+    """Render an AskUserQuestion tool call and collect the user's answer."""
 
     DEFAULT_CSS = """
     QuestionModal {
@@ -346,17 +345,13 @@ class QuestionModal(ModalScreen[str | None]):
             if event.key == "down":
                 if opt_idx + 1 < count:
                     with contextlib.suppress(Exception):
-                        self.query_one(
-                            f"#q{q_idx}-opt{opt_idx + 1}", Checkbox
-                        ).focus()
+                        self.query_one(f"#q{q_idx}-opt{opt_idx + 1}", Checkbox).focus()
                 else:
                     self._advance_from(q_idx)
             else:
                 if opt_idx - 1 >= 0:
                     with contextlib.suppress(Exception):
-                        self.query_one(
-                            f"#q{q_idx}-opt{opt_idx - 1}", Checkbox
-                        ).focus()
+                        self.query_one(f"#q{q_idx}-opt{opt_idx - 1}", Checkbox).focus()
                 else:
                     self._retreat_to(q_idx)
 

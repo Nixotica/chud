@@ -184,9 +184,7 @@ async def test_plan_then_input_for_different_session_queues_correctly(tmp_path):
         assert _count_modals(app, PlanApprovalModal) == 1
         assert app._prompt_active.kind == "plan"
         assert app._prompt_active.session_id == "sess-a"
-        assert [(p.kind, p.session_id) for p in app._prompt_queue] == [
-            ("input", "sess-b")
-        ]
+        assert [(p.kind, p.session_id) for p in app._prompt_queue] == [("input", "sess-b")]
 
         # Reject sess-a's plan (escape key). Then the input request should
         # become active and selection should auto-flip to sess-b.
@@ -351,8 +349,6 @@ async def test_cleanup_request_queues_behind_active_plan(tmp_path):
 
         assert app._prompt_active.kind == "plan"
         assert app._prompt_active.session_id == "sess-a"
-        assert [(p.kind, p.session_id) for p in app._prompt_queue] == [
-            ("cleanup", "sess-b")
-        ]
+        assert [(p.kind, p.session_id) for p in app._prompt_queue] == [("cleanup", "sess-b")]
         assert _count_modals(app, PlanApprovalModal) == 1
         assert _count_modals(app, CleanupConfirmationModal) == 0
