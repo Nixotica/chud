@@ -6,6 +6,7 @@ from typing import Any
 
 from textual import on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
@@ -80,7 +81,8 @@ class QuestionModal(ModalScreen[str | None]):
     """
 
     BINDINGS = [
-        ("escape", "cancel", "Cancel"),
+        Binding("escape", "cancel", "Cancel"),
+        Binding("f2", "submit", "Submit", priority=True),
     ]
 
     def __init__(self, session_id: str, question_input: dict[str, Any]) -> None:
@@ -145,7 +147,7 @@ class QuestionModal(ModalScreen[str | None]):
                 cancel_btn = Button("Cancel (Esc)", id="cancel", variant="error")
                 cancel_btn.can_focus = False
                 yield cancel_btn
-                submit_btn = Button("Submit", id="submit", variant="success")
+                submit_btn = Button("Submit (F2)", id="submit", variant="success")
                 submit_btn.can_focus = False
                 yield submit_btn
 
@@ -161,6 +163,9 @@ class QuestionModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_submit(self) -> None:
+        self._submit()
 
     def on_mount(self) -> None:
         """Place initial focus on the first interactive option widget.

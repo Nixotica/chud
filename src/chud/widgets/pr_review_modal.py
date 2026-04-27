@@ -85,6 +85,7 @@ class PRReviewModal(ModalScreen[PRReviewResult | None]):
 
     BINDINGS = [
         ("escape", "reject", "Reject"),
+        ("f2", "accept", "Accept"),
     ]
 
     def __init__(
@@ -120,10 +121,10 @@ class PRReviewModal(ModalScreen[PRReviewResult | None]):
                 # Same trick as PlanApprovalModal: keep buttons mouse-clickable
                 # but never let them grab keyboard focus, so editing the
                 # Input/TextArea above stays unobstructed.
-                reject_btn = Button("Reject (skip PR)", id="reject", variant="error")
+                reject_btn = Button("Reject — skip PR (Esc)", id="reject", variant="error")
                 reject_btn.can_focus = False
                 yield reject_btn
-                accept_btn = Button("Accept (open PR)", id="accept", variant="success")
+                accept_btn = Button("Accept — open PR (F2)", id="accept", variant="success")
                 accept_btn.can_focus = False
                 yield accept_btn
 
@@ -139,6 +140,9 @@ class PRReviewModal(ModalScreen[PRReviewResult | None]):
 
     def action_reject(self) -> None:
         self._dismiss(accepted=False)
+
+    def action_accept(self) -> None:
+        self._dismiss(accepted=True)
 
     def _dismiss(self, *, accepted: bool) -> None:
         try:
