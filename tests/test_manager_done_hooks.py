@@ -212,9 +212,7 @@ async def test_done_handled_only_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kill_session_with_cleanup_workspace_calls_worktree_cleanup(
-    tmp_path, monkeypatch
-):
+async def test_kill_session_with_cleanup_workspace_calls_worktree_cleanup(tmp_path, monkeypatch):
     mgr = SessionManager()
     sess = _make_session({}, tmp_path)
     mgr.sessions[sess.state.id] = sess
@@ -252,9 +250,7 @@ async def test_kill_session_default_does_not_cleanup(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
     cleanup_calls: list[str] = []
-    monkeypatch.setattr(
-        wt_mgr, "cleanup_workspace", lambda: cleanup_calls.append("nope")
-    )
+    monkeypatch.setattr(wt_mgr, "cleanup_workspace", lambda: cleanup_calls.append("nope"))
 
     async def noop_stop():
         pass
@@ -275,9 +271,7 @@ async def test_accepted_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
     ``submit_pr_review`` before publish runs.
     """
     mgr = SessionManager()
-    sess = _make_session(
-        {OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path
-    )
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path)
     mgr.sessions[sess.state.id] = sess
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
@@ -307,9 +301,7 @@ async def test_accepted_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
 
     assert EventKind.PR_PUBLISHED in kinds
     assert EventKind.CLEANUP_REQUESTED in kinds
-    assert kinds.index(EventKind.PR_PUBLISHED) < kinds.index(
-        EventKind.CLEANUP_REQUESTED
-    )
+    assert kinds.index(EventKind.PR_PUBLISHED) < kinds.index(EventKind.CLEANUP_REQUESTED)
 
 
 @pytest.mark.asyncio
@@ -317,9 +309,7 @@ async def test_accepted_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
     """If PR publish raises after the user accepts, cleanup is still offered
     (after PR_FAILED)."""
     mgr = SessionManager()
-    sess = _make_session(
-        {OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path
-    )
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path)
     mgr.sessions[sess.state.id] = sess
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
@@ -343,6 +333,4 @@ async def test_accepted_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
 
     assert kinds.count(EventKind.CLEANUP_REQUESTED) == 1
     assert EventKind.PR_FAILED in kinds
-    assert kinds.index(EventKind.PR_FAILED) < kinds.index(
-        EventKind.CLEANUP_REQUESTED
-    )
+    assert kinds.index(EventKind.PR_FAILED) < kinds.index(EventKind.CLEANUP_REQUESTED)

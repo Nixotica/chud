@@ -5,6 +5,7 @@ from typing import Any
 
 from rich.markup import escape
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
@@ -31,6 +32,10 @@ class SessionView(Vertical):
     }
     """
 
+    BINDINGS = [
+        Binding("escape", "focus_transcript", "Focus transcript", show=False),
+    ]
+
     def compose(self) -> ComposeResult:
         yield Static("(no session selected)", id="header")
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True, auto_scroll=True)
@@ -48,6 +53,15 @@ class SessionView(Vertical):
     def input(self) -> Input:
         return self.query_one("#input", Input)
 
+    def action_focus_transcript(self) -> None:
+        """Move focus from the input back up to the transcript.
+
+        No-op when no session is selected (the input is disabled in that case).
+        """
+        if self.input.disabled:
+            return
+        self.transcript.focus()
+
     def show_session(self, state: SessionState | None) -> None:
         self.transcript.clear()
         if state is None:
@@ -64,8 +78,7 @@ class SessionView(Vertical):
         repo_names = sorted(wt.repo_path.name for wt in state.attached_repos.values())
         repos = ", ".join(repo_names) or "(no repos)"
         self.header.update(
-            f"[bold]{state.id[:8]}[/bold]  status=[cyan]{state.status.value}[/cyan]  "
-            f"repos: {repos}"
+            f"[bold]{state.id[:8]}[/bold]  status=[cyan]{state.status.value}[/cyan]  repos: {repos}"
         )
 
     def render_event(self, event: Event) -> None:
@@ -86,9 +99,7 @@ class SessionView(Vertical):
             # They remain in the in-memory event log and chud.log for debugging
             # and for a future verbose mode.
         elif kind == EventKind.STATUS_CHANGED:
-            self.transcript.write(
-                f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]"
-            )
+            self.transcript.write(f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]")
         elif kind == EventKind.PLAN_PROPOSED:
             self.transcript.write(
                 "[bold magenta]── Plan proposed (modal will open) ──[/bold magenta]"

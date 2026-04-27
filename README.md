@@ -43,8 +43,15 @@ git clone https://github.com/Nixotica/chud
 cd chud
 pip install -e ".[dev]"
 chud           # or: python -m chud
-pytest
-ruff check .
+```
+
+Quality gates (run before pushing — CI runs the same):
+
+```sh
+pytest                    # tests
+ruff check .              # lint
+ruff format .             # auto-format (CI runs `ruff format --check .`)
+pyright                   # static type-check (same engine as VS Code Pylance)
 ```
 
 ## License

@@ -1,0 +1,39 @@
+{
+  "questions": [
+    {
+      "header": "Approach",
+      "question": "Which approach should we take to refactor the renderer?",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Extract a base class",
+          "description": "Pull common logic into BaseRenderer; subclasses override hooks."
+        },
+        {
+          "label": "Composition over inheritance",
+          "description": "Inject strategies; renderers stay flat."
+        },
+        {
+          "label": "Leave as-is",
+          "description": "Defer the refactor; fix only the immediate bug."
+        }
+      ]
+    },
+    {
+      "header": "Coverage",
+      "question": "Which test layers should we add?",
+      "multiSelect": true,
+      "options": [
+        {"label": "Unit tests"},
+        {"label": "Integration tests"},
+        {"label": "Snapshot tests"},
+        {"label": "Visual regression tests"}
+      ]
+    },
+    {
+      "header": "Notes",
+      "question": "Any context the agent should know before starting?",
+      "multiSelect": false
+    }
+  ]
+}

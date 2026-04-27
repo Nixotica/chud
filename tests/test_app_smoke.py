@@ -195,6 +195,35 @@ async def test_session_view_escapes_bracket_payloads():
         _force_render(view)
 
 
+async def test_session_view_escape_moves_focus_off_input():
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        st = SessionState(id="esc1", workspace_dir=Path("/tmp"), initial_prompt="p")
+        view.show_session(st)
+        await pilot.pause()
+        view.input.focus()
+        await pilot.pause()
+        assert view.input.has_focus
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not view.input.has_focus
+        assert view.transcript.has_focus
+
+
+async def test_session_view_escape_is_noop_when_input_disabled():
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        view.show_session(None)
+        await pilot.pause()
+        assert view.input.disabled
+        view.action_focus_transcript()
+        await pilot.pause()
+
+
 async def test_session_view_show_session_clears_and_disables_input():
     app = ChudApp()
     async with app.run_test() as pilot:
@@ -271,7 +300,7 @@ async def test_plan_modal_approve_via_a_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -286,7 +315,7 @@ async def test_plan_modal_reject_via_r_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -301,7 +330,7 @@ async def test_plan_modal_reject_via_escape():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -316,7 +345,7 @@ async def test_plan_modal_respond_with_typed_message():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -342,7 +371,7 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
