@@ -143,13 +143,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         elif event.button.id == "start":
             self._submit()
 
-    def _save_defaults(self) -> None:
-        options = {
-            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
-        }
-        save_user_config(options)
-        self.app.notify("Saved as defaults.")
-
     def action_cancel(self) -> None:
         self.dismiss(None)
 
