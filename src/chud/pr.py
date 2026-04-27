@@ -295,6 +295,9 @@ async def publish_draft_prs(
             )
             continue
         if count.strip() == "0":
+            # We just confirmed clean (no dirty edits) AND no commits ahead
+            # of base — this branch is genuinely abandoned. Mark it for
+            # silent cleanup rather than emitting a noisy PR_FAILED toast.
             results.append(
                 PRResult(repo_label=label, branch=branch, discarded=True)
             )

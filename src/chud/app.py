@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +28,8 @@ from chud.widgets.session_view import SessionView
 log = logging.getLogger(__name__)
 
 PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
+
+DevHook = Callable[["ChudApp"], Awaitable[None]]
 
 
 @dataclass
@@ -65,8 +68,9 @@ class ChudApp(App[None]):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dev_hook: DevHook | None = None) -> None:
         super().__init__()
+        self._dev_hook = dev_hook
         self.manager = SessionManager()
         self._event_log: dict[str, list[Event]] = defaultdict(list)
         self._selected_session_id: str | None = None
@@ -79,6 +83,10 @@ class ChudApp(App[None]):
         # newly-arrived modal can't cover one the user hasn't answered yet.
         self._prompt_queue: list[PromptRequest] = []
         self._prompt_active: PromptRequest | None = None
+        # Number of user-initiated modals currently on screen (NewSession,
+        # AttachRepo). While > 0, session-driven prompts stay queued so they
+        # can't pop over a modal the user is actively typing into.
+        self._user_modal_depth: int = 0
 
     # ------------------------------------------------------------------ layout
 
@@ -95,6 +103,8 @@ class ChudApp(App[None]):
         self.query_one(SessionListView).list_view.focus()
         # subscribe and drain events in a background worker
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
+        if self._dev_hook is not None:
+            self.run_worker(self._dev_hook(self), exclusive=False, name="dev-hook")
 
     async def on_unmount(self) -> None:
         await self.manager.shutdown()
@@ -113,7 +123,12 @@ class ChudApp(App[None]):
         self.run_worker(self._new_session_flow(), exclusive=False)
 
     async def _new_session_flow(self) -> None:
-        result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
+        self._user_modal_depth += 1
+        try:
+            result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
         if result is None:
             return
         try:
@@ -137,7 +152,12 @@ class ChudApp(App[None]):
         if sid is None:
             self.notify("No session selected.", severity="warning")
             return
-        repo: Path | None = await self.push_screen_wait(AttachRepoModal())
+        self._user_modal_depth += 1
+        try:
+            repo: Path | None = await self.push_screen_wait(AttachRepoModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
         if repo is None:
             return
         try:
@@ -345,6 +365,11 @@ class ChudApp(App[None]):
     def _maybe_show_next_prompt(self) -> None:
         """If nothing is currently shown, pop the next request and show it."""
         if self._prompt_active is not None:
+            return
+        if self._user_modal_depth > 0:
+            # A user-initiated modal (NewSession/AttachRepo) is on screen;
+            # don't pop a session-driven prompt over it. The flow that closes
+            # the user modal calls back into us once it's gone.
             return
         # Skip requests for sessions that no longer exist (killed mid-queue).
         while self._prompt_queue:
@@ -558,13 +583,33 @@ class ChudApp(App[None]):
 
 
 def main() -> int:
+    import argparse
+
+    from chud.dev import SCENARIOS
+
+    parser = argparse.ArgumentParser(prog="chud")
+    parser.add_argument(
+        "--dev",
+        choices=sorted(SCENARIOS.keys()),
+        default=None,
+        help="(pre-release) launch the TUI with a dev scenario on top",
+    )
+    parser.add_argument(
+        "--seed",
+        type=Path,
+        default=None,
+        help="(pre-release) JSON file overriding the default seed for --dev",
+    )
+    args = parser.parse_args()
+
     log_path = state_mod.data_root() / "chud.log"
     logging.basicConfig(
         level=logging.INFO,
         filename=log_path,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    ChudApp().run()
+    dev_hook = SCENARIOS[args.dev](args.seed) if args.dev else None
+    ChudApp(dev_hook=dev_hook).run()
     return 0
 
 
