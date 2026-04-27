@@ -300,7 +300,7 @@ async def test_plan_modal_approve_via_a_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -315,7 +315,7 @@ async def test_plan_modal_reject_via_r_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -330,7 +330,7 @@ async def test_plan_modal_reject_via_escape():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -345,7 +345,7 @@ async def test_plan_modal_respond_with_typed_message():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -371,7 +371,7 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),

@@ -182,6 +182,7 @@ async def test_plan_then_input_for_different_session_queues_correctly(tmp_path):
         await pilot.pause()
 
         assert _count_modals(app, PlanApprovalModal) == 1
+        assert app._prompt_active is not None
         assert app._prompt_active.kind == "plan"
         assert app._prompt_active.session_id == "sess-a"
         assert [(p.kind, p.session_id) for p in app._prompt_queue] == [("input", "sess-b")]
@@ -216,6 +217,7 @@ async def test_killed_session_with_queued_prompt_is_skipped(tmp_path):
         await pilot.pause()
 
         # a is active; b and c are queued.
+        assert app._prompt_active is not None
         assert app._prompt_active.session_id == "sess-a"
         assert [p.session_id for p in app._prompt_queue] == ["sess-b", "sess-c"]
 
@@ -249,6 +251,7 @@ async def test_active_prompt_session_killed_advances_queue(tmp_path):
         app._on_event(_plan_event("sess-b"))
         await pilot.pause()
 
+        assert app._prompt_active is not None
         assert app._prompt_active.session_id == "sess-a"
 
         # Simulate the active session being killed out from under the modal.
@@ -347,6 +350,7 @@ async def test_cleanup_request_queues_behind_active_plan(tmp_path):
         app._on_event(_cleanup_event("sess-b"))
         await pilot.pause()
 
+        assert app._prompt_active is not None
         assert app._prompt_active.kind == "plan"
         assert app._prompt_active.session_id == "sess-a"
         assert [(p.kind, p.session_id) for p in app._prompt_queue] == [("cleanup", "sess-b")]

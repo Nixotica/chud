@@ -15,20 +15,20 @@ from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
 
 
-def _toggle_button_with_off_glyph(self: Checkbox | RadioButton) -> Content:
+def _toggle_button_with_off_glyph(self: Checkbox | RadioButton, inner_off: str) -> Content:
     """Render the toggle button cell, swapping glyph by ``self.value``.
 
     Textual 8.x's default ``ToggleButton._button`` renders ``BUTTON_INNER``
     in both states and only flips its colour. We want a different character
-    per state — ✓ when on, ``BUTTON_INNER_OFF`` when off — so we recreate
-    the assembly with a value-dependent inner.
+    per state — ✓ when on, ``inner_off`` when off — so we recreate the
+    assembly with a value-dependent inner.
     """
     button_style = self.get_visual_style("toggle--button")
     side_style = Style(
         foreground=button_style.background,
         background=self.background_colors[1],
     )
-    inner = self.BUTTON_INNER if self.value else self.BUTTON_INNER_OFF
+    inner = self.BUTTON_INNER if self.value else inner_off
     return Content.assemble(
         (self.BUTTON_LEFT, side_style),
         (inner, button_style),
@@ -42,7 +42,7 @@ class _CheckMarkBox(Checkbox):
 
     @property
     def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self)
+        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
 class _CheckMarkRadio(RadioButton):
@@ -51,7 +51,7 @@ class _CheckMarkRadio(RadioButton):
 
     @property
     def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self)
+        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
 class QuestionModal(ModalScreen[str | None]):
