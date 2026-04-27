@@ -5,7 +5,7 @@ import contextlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -48,9 +48,11 @@ class AgentSession:
         state: SessionState,
         *,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self.state = state
         self.model = model
+        self.effort = effort
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -79,6 +81,10 @@ class AgentSession:
         attached = list(self.state.attached_repos.values())
         cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
 
+        # ``ClaudeAgentOptions.effort`` is typed as a narrow Literal in the
+        # SDK; chud carries it as ``str | None`` (validated by
+        # ``normalize_effort`` upstream), so cast at the boundary.
+        effort = cast(Literal["low", "medium", "high", "max"] | None, self.effort)
         options = ClaudeAgentOptions(
             cwd=cwd,
             permission_mode="plan",
@@ -88,6 +94,7 @@ class AgentSession:
                 "Notification": [HookMatcher(hooks=[self._on_notification_hook])],
             },
             model=self.model,
+            effort=effort,
         )
 
         self._client = ClaudeSDKClient(options=options)

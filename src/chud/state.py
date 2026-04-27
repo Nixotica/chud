@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from platformdirs import user_data_dir
 
 from chud.types import SessionState
+
+# Key under which the per-user default effort is stored in ``config.json``.
+# Mirrors ``KEY_EFFORT`` in chud.types but lives independently because the
+# config file is a flat dict mixing option toggles and the effort string.
+CONFIG_KEY_EFFORT = "effort"
 
 
 def data_root() -> Path:
@@ -44,8 +50,13 @@ def save_all(sessions: dict[str, SessionState]) -> None:
     tmp.replace(path)
 
 
-def load_user_config() -> dict[str, bool]:
-    """Load persisted user defaults; return {} if missing or unreadable."""
+def load_user_config() -> dict[str, Any]:
+    """Load persisted user defaults; return {} if missing or unreadable.
+
+    The config dict is heterogeneous: it holds the boolean option toggles
+    (keys in the ``SESSION_OPTIONS`` registry) alongside the per-user default
+    ``effort`` string, so the value type is ``Any``.
+    """
     path = config_file()
     if not path.exists():
         return {}
@@ -56,10 +67,10 @@ def load_user_config() -> dict[str, bool]:
     return raw if isinstance(raw, dict) else {}
 
 
-def save_user_config(options: dict[str, bool]) -> None:
+def save_user_config(config: dict[str, Any]) -> None:
     path = config_file()
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(options, indent=2))
+    tmp.write_text(json.dumps(config, indent=2))
     tmp.replace(path)
 
 
@@ -69,6 +80,13 @@ def user_default_options() -> dict[str, bool]:
     from chud.options import normalize_options
 
     return normalize_options(load_user_config())
+
+
+def user_default_effort() -> str | None:
+    """Persisted default effort, or ``None`` if unset / invalid."""
+    from chud.options import normalize_effort
+
+    return normalize_effort(load_user_config().get(CONFIG_KEY_EFFORT))
 
 
 def get_recent_repo_paths() -> list[str]:

@@ -136,6 +136,7 @@ class ChudApp(App[None]):
                 prompt=result.prompt,
                 repo_path=result.repo_path,
                 options=result.options,
+                effort=result.effort,
             )
         except Exception as e:
             log.exception("create_session failed")

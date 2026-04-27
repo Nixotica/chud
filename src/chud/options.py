@@ -8,6 +8,24 @@ the key on the next persistence round-trip.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+# Mirror of the inline ``Literal`` on ``ClaudeAgentOptions.effort`` in
+# claude-agent-sdk's types.py — the SDK does not export a named alias or a
+# tuple of valid values, so we keep our own source of truth here.
+EFFORT_VALUES: tuple[str | None, ...] = (None, "low", "medium", "high", "max")
+DEFAULT_EFFORT: str | None = None
+
+
+def normalize_effort(raw: object) -> str | None:
+    """Coerce a persisted/raw effort value to a known choice (or ``None``).
+
+    Unknown / legacy / wrong-type values silently fall back to the default so
+    that a corrupted ``sessions.json`` or stale config can't crash the app.
+    """
+    if raw in EFFORT_VALUES:
+        return raw  # type: ignore[return-value]
+    return DEFAULT_EFFORT
 
 
 @dataclass(frozen=True)
@@ -50,12 +68,14 @@ def default_options() -> dict[str, bool]:
     return {opt.id: opt.default for opt in SESSION_OPTIONS}
 
 
-def normalize_options(raw: dict[str, bool] | None) -> dict[str, bool]:
+def normalize_options(raw: dict[str, Any] | None) -> dict[str, bool]:
     """Merge ``raw`` over the registry defaults.
 
     Unknown keys in ``raw`` are dropped so that removing an option from the
     registry doesn't carry stale flags forward. Missing keys take the default
-    so newly-added options apply to old persisted sessions.
+    so newly-added options apply to old persisted sessions. The input type is
+    ``Any`` because the user config dict mixes option booleans with the
+    ``effort`` string; this function coerces to ``bool`` and ignores the rest.
     """
     base = default_options()
     if raw:

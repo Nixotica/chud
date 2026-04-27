@@ -21,6 +21,7 @@ KEY_PENDING_QUESTION = "pending_question"
 KEY_ERROR = "error"
 KEY_OPTIONS = "options"
 KEY_APPROVED_PLAN = "approved_plan"
+KEY_EFFORT = "effort"
 
 
 class SessionStatus(str, Enum):
@@ -68,6 +69,7 @@ class SessionState:
     error: str | None = None
     options: dict[str, bool] = field(default_factory=dict)
     approved_plan: str | None = None
+    effort: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,12 +84,13 @@ class SessionState:
             KEY_ERROR: self.error,
             KEY_OPTIONS: dict(self.options),
             KEY_APPROVED_PLAN: self.approved_plan,
+            KEY_EFFORT: self.effort,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionState:
         # Imported lazily to avoid a circular import at module load.
-        from chud.options import normalize_options
+        from chud.options import normalize_effort, normalize_options
 
         return cls(
             id=d[KEY_ID],
@@ -103,6 +106,7 @@ class SessionState:
             error=d.get(KEY_ERROR),
             options=normalize_options(d.get(KEY_OPTIONS)),
             approved_plan=d.get(KEY_APPROVED_PLAN),
+            effort=normalize_effort(d.get(KEY_EFFORT)),
         )
 
 
