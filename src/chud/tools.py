@@ -35,7 +35,13 @@ def build_chud_mcp_server(attach: AttachCallback) -> Any:
             "several repos). Prefer to confirm with the user via "
             "AskUserQuestion first when more than one candidate looks "
             "plausible. The path must be the absolute path to a git repo "
-            "toplevel."
+            "toplevel.\n\n"
+            "IMPORTANT: chud denies Edit/Write/NotebookEdit on paths outside "
+            "attached worktrees, and denies Bash entirely until at least one "
+            "repo is attached. Attach creates a per-session worktree on "
+            "branch chud/{session_id}, so edits never touch the user's main "
+            "checkout — discover candidate repos with the read-only "
+            "Read/Glob/LS tools first, then call this tool before editing."
         ),
         {"path": str},
     )

@@ -111,6 +111,11 @@ class AgentSession:
             hooks={
                 "Stop": [HookMatcher(hooks=[self._on_stop_hook])],
                 "Notification": [HookMatcher(hooks=[self._on_notification_hook])],
+                # PreToolUse fires for every tool call regardless of
+                # permission_mode, so it's the only reliable enforcement point
+                # once we flip to acceptEdits — can_use_tool is bypassed for
+                # auto-allowed tools in that mode.
+                "PreToolUse": [HookMatcher(hooks=[self._on_pre_tool_use_hook])],
             },
             model=self.model,
             effort=effort,
@@ -244,9 +249,113 @@ class AgentSession:
             await self._emit(EventKind.QUESTION_ASKED, {"input": dict(tool_input)})
             return await self._question_decision
 
-        # Default: allow. Future iterations may add a deny-list or interactive gating
-        # for non-plan tools (e.g., destructive Bash). v1 trusts acceptEdits.
+        reason = self._check_filesystem_access(tool_name, tool_input)
+        if reason is not None:
+            return PermissionResultDeny(message=reason)
+
         return PermissionResultAllow()
+
+    # Edit/Write/NotebookEdit expose the target path in their tool input under
+    # these keys; we resolve and check it against attached worktrees.
+    _PATH_TOOL_ARG: dict[str, str] = {
+        "Edit": "file_path",
+        "Write": "file_path",
+        "NotebookEdit": "notebook_path",
+    }
+
+    def _check_filesystem_access(self, tool_name: str, tool_input: dict[str, Any]) -> str | None:
+        """Gate filesystem-mutating tools to attached worktrees.
+
+        Layer 1 (pre-attach): with no repos attached, deny Edit/Write/
+        NotebookEdit/Bash so the agent must call ``mcp__chud__attach_repo``
+        first. Read-only tools (Read/Grep/Glob/LS) stay open for discovery.
+
+        Layer 2 (path gate): once repos are attached, deny path-typed tools
+        whose target falls outside any attached worktree. Bash is not vetted
+        here — Layer 3b sets the SDK cwd to the worktree at session start so
+        agents passively land inside the worktree without static parsing.
+
+        Plan mode already disables edits, so this gate only applies after the
+        plan has been approved (status EXECUTING / AWAITING_USER).
+        """
+        if self.state.status in (
+            SessionStatus.NEW,
+            SessionStatus.PLANNING,
+            SessionStatus.AWAITING_PLAN_APPROVAL,
+        ):
+            return None
+
+        is_path_tool = tool_name in self._PATH_TOOL_ARG
+        is_bash = tool_name == "Bash"
+        if not (is_path_tool or is_bash):
+            return None
+
+        attached = self.state.attached_repos
+        if not attached:
+            return (
+                f"chud: {tool_name} is not allowed before any repo is attached "
+                f"to this session. Use Read/Glob/LS to discover candidate "
+                f"repos, then call mcp__chud__attach_repo with the absolute "
+                f"path to a git repo toplevel. After attach, edits and Bash "
+                f"are allowed inside the resulting worktree."
+            )
+
+        if not is_path_tool:
+            return None
+
+        arg_name = self._PATH_TOOL_ARG[tool_name]
+        raw = tool_input.get(arg_name)
+        if not isinstance(raw, str) or not raw:
+            return None  # malformed — let the tool surface its own error.
+
+        target = Path(raw).expanduser()
+        try:
+            resolved_target = target.resolve()
+        except OSError:
+            resolved_target = target.absolute()
+
+        worktree_paths = [wt.worktree_path.resolve() for wt in attached.values()]
+        for wp in worktree_paths:
+            try:
+                resolved_target.relative_to(wp)
+                return None
+            except ValueError:
+                continue
+
+        listed = ", ".join(str(wp) for wp in worktree_paths)
+        return (
+            f"chud: {tool_name} blocked — {resolved_target} is outside this "
+            f"session's attached worktrees ({listed}). To edit a different "
+            f"repo, call mcp__chud__attach_repo with the repo toplevel; chud "
+            f"will create a worktree on branch chud/{self.state.id} under "
+            f"{self.state.workspace_dir} and you should edit that copy "
+            f"instead of the user's main checkout."
+        )
+
+    async def _on_pre_tool_use_hook(
+        self,
+        input_data: HookInput,
+        tool_use_id: str | None,
+        context: HookContext,
+    ) -> HookJSONOutput:
+        """Enforce the filesystem gate for every tool call.
+
+        Unlike ``can_use_tool``, PreToolUse hooks fire even when permission_mode
+        is ``acceptEdits`` — so this is the gate that actually runs once the
+        user approves a plan.
+        """
+        tool_name = cast(str, input_data.get("tool_name", ""))
+        tool_input = cast(dict[str, Any], input_data.get("tool_input", {}))
+        reason = self._check_filesystem_access(tool_name, tool_input)
+        if reason is None:
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
 
     async def _on_stop_hook(
         self,
