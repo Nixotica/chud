@@ -72,9 +72,7 @@ async def test_done_without_options_emits_no_extra_events(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_done_with_make_draft_pr_requests_review_not_publish(
-    tmp_path, monkeypatch
-):
+async def test_done_with_make_draft_pr_requests_review_not_publish(tmp_path, monkeypatch):
     """DONE with the draft-PR option must broadcast PR_REVIEW_REQUESTED and
     NOT publish until ``submit_pr_review(accepted=True)`` is invoked."""
     mgr = SessionManager()
@@ -164,9 +162,7 @@ async def test_submit_pr_review_reject_skips_publish(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_submit_pr_review_reject_with_cleanup_emits_cleanup(
-    tmp_path, monkeypatch
-):
+async def test_submit_pr_review_reject_with_cleanup_emits_cleanup(tmp_path, monkeypatch):
     """Rejecting the PR must still trigger the cleanup prompt when the
     self-cleanup option is enabled — the user may have rejected the PR
     *because* they want to wipe the workspace."""
