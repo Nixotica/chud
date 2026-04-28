@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, default_options
@@ -49,8 +49,8 @@ def test_legacy_session_without_options_loads_with_defaults():
         "status": SessionStatus.DONE.value,
         "initial_prompt": "legacy",
         "attached_repos": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
         "pending_question": None,
         "error": None,
         # no "options" key
@@ -108,8 +108,8 @@ def test_legacy_session_without_effort_loads_as_none():
         "status": SessionStatus.DONE.value,
         "initial_prompt": "legacy",
         "attached_repos": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
         "pending_question": None,
         "error": None,
         # no "effort" key
@@ -133,8 +133,8 @@ def test_legacy_session_without_approved_plan_loads_as_none():
         "status": SessionStatus.DONE.value,
         "initial_prompt": "legacy",
         "attached_repos": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
         "pending_question": None,
         "error": None,
         # no "approved_plan" key

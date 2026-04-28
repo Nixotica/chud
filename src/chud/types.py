@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,7 @@ KEY_APPROVED_PLAN = "approved_plan"
 KEY_EFFORT = "effort"
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     NEW = "new"
     PLANNING = "planning"
     AWAITING_PLAN_APPROVAL = "awaiting_plan_approval"
@@ -63,8 +63,8 @@ class SessionState:
     status: SessionStatus = SessionStatus.NEW
     initial_prompt: str = ""
     attached_repos: dict[str, Worktree] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_activity_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     pending_question: str | None = None
     error: str | None = None
     options: dict[str, bool] = field(default_factory=dict)
@@ -110,7 +110,7 @@ class SessionState:
         )
 
 
-class EventKind(str, Enum):
+class EventKind(StrEnum):
     STATUS_CHANGED = "status_changed"
     TRANSCRIPT_APPENDED = "transcript_appended"
     PLAN_PROPOSED = "plan_proposed"
@@ -131,4 +131,4 @@ class Event:
     session_id: str
     kind: EventKind
     payload: dict[str, Any] = field(default_factory=dict)
-    at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    at: datetime = field(default_factory=lambda: datetime.now(UTC))

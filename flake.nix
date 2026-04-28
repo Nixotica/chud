@@ -36,15 +36,15 @@
       packages = forAllSystems ({ pkgs, ... }: {
         pre-commit = pkgs.writeShellApplication {
           name = "pre-commit";
-          runtimeInputs = [ pkgs.python312 pkgs.ruff pkgs.pyright ];
+          runtimeInputs = [ pkgs.python312 pkgs.uv pkgs.ruff pkgs.pyright ];
           text = ''
             set -euo pipefail
 
-            if [ ! -x .venv/bin/pytest ] || [ ! -x .venv/bin/pyright ]; then
-              echo ">>> creating .venv and installing dev deps"
-              python -m venv .venv
-              .venv/bin/pip install --upgrade pip >/dev/null
-              .venv/bin/pip install -e ".[dev]"
+            if [ ! -x .venv/bin/pytest ] || [ ! -x .venv/bin/pyright ] || [ requirements.lock -nt .venv/bin/pytest ]; then
+              echo ">>> creating .venv and installing pinned deps from requirements.lock"
+              uv venv .venv --python 3.12
+              uv pip sync --python .venv/bin/python requirements.lock
+              uv pip install --python .venv/bin/python -e . --no-deps
             fi
 
             echo ">>> ruff format"

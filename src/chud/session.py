@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -314,7 +314,7 @@ class AgentSession:
         if self.state.status == status:
             return
         self.state.status = status
-        self.state.last_activity_at = datetime.now(timezone.utc)
+        self.state.last_activity_at = datetime.now(UTC)
         await self._emit(EventKind.STATUS_CHANGED, {"status": status.value})
 
     async def _emit(self, kind: EventKind, payload: dict[str, Any]) -> None:
