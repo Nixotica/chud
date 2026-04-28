@@ -93,7 +93,8 @@ class SessionManager:
             model=model,
             launch_cwd=launch_cwd,
             attach_callback=_attach_for_agent,
-            effort=st.effort)
+            effort=st.effort,
+        )
         self.sessions[sid] = sess
         self.worktrees[sid] = wt_mgr
 

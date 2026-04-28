@@ -11,7 +11,6 @@ from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
-    get_recent_repo_paths,
     load_user_config,
     save_user_config,
     user_default_effort,
@@ -26,34 +25,7 @@ _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v i
 class NewSessionResult:
     prompt: str
     options: dict[str, bool] = field(default_factory=user_default_options)
-
-
-def _detect_cwd_repo() -> str:
-    """If CWD is inside a git repo, return its toplevel path; else empty string."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _safe_recent_repos() -> list[str]:
-    """Return recent repo paths for autocomplete, swallowing any load errors.
-
-    The modal must open even if `sessions.json` is missing or malformed, so we
-    fall back to an empty list and let the suggester silently no-op.
-    """
-    try:
-        return get_recent_repo_paths()
-    except Exception:
-        return []
+    effort: str | None = None
 
 
 class NewSessionModal(ModalScreen[NewSessionResult | None]):
@@ -205,7 +177,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         }
         self.dismiss(
             NewSessionResult(
-                repo_path=repo_path,
                 prompt=prompt,
                 options=options,
                 effort=self._read_effort(),

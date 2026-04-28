@@ -56,9 +56,7 @@ def test_detect_cwd_repo_inside_repo(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert detected.resolve() == repo.resolve()
 
 
-def test_detect_cwd_repo_inside_repo_subdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_detect_cwd_repo_inside_repo_subdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """detect_cwd_repo() walks up from a subdirectory to the toplevel."""
     repo = tmp_path / "myrepo"
     _init_repo(repo)

@@ -1,12 +1,5 @@
 """In-process MCP tools exposed to the agent.
 
-Currently we only ship one tool — ``attach_repo`` — which lets the agent
-add a git repo as a session worktree mid-run. This is the escape hatch for
-the "user launched chud above several repos" case: the modal no longer
-asks for a repo path, so when CWD isn't a git repo the session starts
-unattached and the agent uses ``ls``/``AskUserQuestion`` and this tool to
-attach what it needs.
-
 The MCP server is constructed per ``AgentSession`` so the tool callback
 is bound to that session's manager (via the ``attach`` callable) and can't
 leak attaches across sessions.
@@ -52,15 +45,9 @@ def build_chud_mcp_server(attach: AttachCallback) -> Any:
             await attach(repo)
         except Exception as e:
             return {
-                "content": [
-                    {"type": "text", "text": f"Failed to attach {repo}: {e!r}"}
-                ],
+                "content": [{"type": "text", "text": f"Failed to attach {repo}: {e!r}"}],
                 "is_error": True,
             }
-        return {
-            "content": [
-                {"type": "text", "text": f"Attached {repo} as a worktree."}
-            ]
-        }
+        return {"content": [{"type": "text", "text": f"Attached {repo} as a worktree."}]}
 
     return create_sdk_mcp_server("chud", tools=[attach_repo])
