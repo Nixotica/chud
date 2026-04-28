@@ -153,16 +153,20 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                 (f"{label} (default)" if value == default_effort else label, value)
                 for label, value in _EFFORT_CHOICES
             )
-            yield Select(
-                choices,
-                id=KEY_EFFORT,
-                allow_blank=default_effort is None,
-                value=default_effort if default_effort is not None else Select.BLANK,
-                tooltip=(
-                    "Reasoning effort hint for the agent. "
-                    "Default leaves it to the SDK; higher values trade speed for thoroughness."
-                ),
+            tooltip = (
+                "Reasoning effort hint for the agent. "
+                "Default leaves it to the SDK; higher values trade speed for thoroughness."
             )
+            if default_effort is None:
+                yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
+            else:
+                yield Select(
+                    choices,
+                    id=KEY_EFFORT,
+                    allow_blank=False,
+                    value=default_effort,
+                    tooltip=tooltip,
+                )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Start (F2)", id="start", variant="success")
