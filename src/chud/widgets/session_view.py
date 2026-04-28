@@ -78,8 +78,7 @@ class SessionView(Vertical):
         repo_names = sorted(wt.repo_path.name for wt in state.attached_repos.values())
         repos = ", ".join(repo_names) or "(no repos)"
         self.header.update(
-            f"[bold]{state.id[:8]}[/bold]  status=[cyan]{state.status.value}[/cyan]  "
-            f"repos: {repos}"
+            f"[bold]{state.id[:8]}[/bold]  status=[cyan]{state.status.value}[/cyan]  repos: {repos}"
         )
 
     def render_event(self, event: Event) -> None:
@@ -100,9 +99,7 @@ class SessionView(Vertical):
             # They remain in the in-memory event log and chud.log for debugging
             # and for a future verbose mode.
         elif kind == EventKind.STATUS_CHANGED:
-            self.transcript.write(
-                f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]"
-            )
+            self.transcript.write(f"[dim italic]→ {escape(str(p.get('status')))}[/dim italic]")
         elif kind == EventKind.PLAN_PROPOSED:
             self.transcript.write(
                 "[bold magenta]── Plan proposed (modal will open) ──[/bold magenta]"

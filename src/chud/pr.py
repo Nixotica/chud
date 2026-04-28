@@ -22,6 +22,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from chud.settings import render_pr_body_footer
 from chud.types import SessionState
 
 log = logging.getLogger(__name__)
@@ -79,10 +80,8 @@ async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
         env=_no_prompt_env(),
     )
     try:
-        out_b, err_b = await asyncio.wait_for(
-            proc.communicate(), timeout=_RUN_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=_RUN_TIMEOUT_S)
+    except TimeoutError:
         log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
@@ -127,9 +126,7 @@ async def _is_dirty(worktree: Path) -> bool:
     return bool(out.strip())
 
 
-async def _auto_commit(
-    worktree: Path, title: str, body: str
-) -> tuple[bool, str]:
+async def _auto_commit(worktree: Path, title: str, body: str) -> tuple[bool, str]:
     """Stage and commit every change in ``worktree`` under one chud commit.
 
     The Claude SDK in ``acceptEdits`` mode edits files but never commits, so
@@ -146,9 +143,7 @@ async def _auto_commit(
     rc, _, err = await _run(["git", "add", "-A"], cwd=worktree)
     if rc != 0:
         return False, err or "git add failed"
-    rc, _, err = await _run(
-        ["git", "commit", "-m", title, "-m", body], cwd=worktree
-    )
+    rc, _, err = await _run(["git", "commit", "-m", title, "-m", body], cwd=worktree)
     if rc != 0:
         return False, err or "git commit failed"
     return True, ""
@@ -205,11 +200,14 @@ def _title_from_prompt(prompt: str) -> str:
 
 
 def _body_from_prompt(session_id: str, prompt: str) -> str:
-    """Fallback body when no approved plan is available."""
-    return (
-        f"Draft PR opened by chud session `{session_id}`.\n\n"
-        f"Initial prompt:\n\n```\n{prompt}\n```\n"
-    )
+    """Fallback body when no approved plan is available.
+
+    The lead line is the user-configurable PR body footer template (default
+    matches the legacy ``*Draft PR opened by chud session ...*`` blurb), so
+    a custom template applies here too.
+    """
+    footer = render_pr_body_footer(session_id)
+    return f"{footer}\n\nInitial prompt:\n\n```\n{prompt}\n```\n"
 
 
 def pick_title(state: SessionState) -> str:
@@ -229,7 +227,8 @@ def pick_body(state: SessionState) -> str:
     if state.approved_plan:
         context = _extract_plan_context(state.approved_plan)
         if context:
-            return f"{context}\n\n---\n*Draft PR opened by chud session `{state.id}`.*\n"
+            footer = render_pr_body_footer(state.id)
+            return f"{context}\n\n---\n{footer}\n"
     return _body_from_prompt(state.id, state.initial_prompt)
 
 
@@ -298,9 +297,7 @@ async def publish_draft_prs(
             # We just confirmed clean (no dirty edits) AND no commits ahead
             # of base — this branch is genuinely abandoned. Mark it for
             # silent cleanup rather than emitting a noisy PR_FAILED toast.
-            results.append(
-                PRResult(repo_label=label, branch=branch, discarded=True)
-            )
+            results.append(PRResult(repo_label=label, branch=branch, discarded=True))
             continue
 
         rc, _, err = await _run(

@@ -15,6 +15,7 @@ from pathlib import Path
 from chud.app import ChudApp
 from chud.types import Event, EventKind, SessionState, SessionStatus, Worktree
 from chud.widgets.attach_repo_modal import AttachRepoModal
+from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal
 from chud.widgets.plan_modal import PlanApprovalModal
 from chud.widgets.session_list import SessionListView, SessionRow
@@ -273,7 +274,7 @@ async def test_plan_modal_approve_via_a_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -288,7 +289,7 @@ async def test_plan_modal_reject_via_r_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -303,7 +304,7 @@ async def test_plan_modal_reject_via_escape():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -318,7 +319,7 @@ async def test_plan_modal_respond_with_typed_message():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -344,7 +345,7 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str] = []
+        result: list[bool | str | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -355,3 +356,65 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
         await pilot.press("enter")  # submit empty
         await pilot.pause()
         assert result == [False]
+
+
+def _cleanup_modal_text(modal: CleanupConfirmationModal) -> str:
+    """Concatenate every Static's rendered text inside the modal.
+
+    Uses ``Static.render()`` (markup → plain Text) rather than the raw markup
+    attribute so the assertions match what the user actually sees.
+    """
+    from textual.widgets import Static as _Static
+
+    parts: list[str] = []
+    for static in modal.query(_Static):
+        parts.append(str(static.render()))
+    return "\n".join(parts)
+
+
+async def test_cleanup_modal_unpublished_shows_destructive_copy():
+    """No PRs published → keep the existing red/ominous warning copy."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        state = SessionState(
+            id="sess1234",
+            workspace_dir=Path("/tmp/ws"),
+            initial_prompt="do thing",
+        )
+        modal = CleanupConfirmationModal(state=state)
+        app.push_screen(modal)
+        await pilot.pause()
+        text = _cleanup_modal_text(modal)
+        assert "permanently delete" in text
+        assert "will be lost" in text
+        # And no draft-PR success line.
+        assert "Draft PRs opened" not in text
+
+
+async def test_cleanup_modal_published_swaps_to_success_copy():
+    """Successful PRs in payload → calmer copy with the URL, no loss warning."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        state = SessionState(
+            id="sess5678",
+            workspace_dir=Path("/tmp/ws"),
+            initial_prompt="do thing",
+        )
+        modal = CleanupConfirmationModal(
+            state=state,
+            published_prs=[
+                {"repo": "alpha", "url": "https://github.com/x/y/pull/1"},
+                {"repo": "beta", "url": "https://github.com/a/b/pull/2"},
+            ],
+        )
+        app.push_screen(modal)
+        await pilot.pause()
+        text = _cleanup_modal_text(modal)
+        assert "Work is pushed" in text
+        assert "Draft PRs opened" in text
+        assert "https://github.com/x/y/pull/1" in text
+        assert "https://github.com/a/b/pull/2" in text
+        assert "permanently delete" not in text
+        assert "will be lost" not in text

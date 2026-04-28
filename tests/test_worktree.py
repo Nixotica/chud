@@ -88,9 +88,7 @@ def test_attach_repo_creates_worktree(tmp_path: Path):
 def test_attach_repo_idempotent(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt1 = mgr.attach_repo(repo)
@@ -104,9 +102,7 @@ def test_attach_two_repos_same_basename_disambiguated(tmp_path: Path):
     b = tmp_path / "org-b" / "api"
     _init_repo(a)
     _init_repo(b)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt_a = mgr.attach_repo(a)
@@ -130,6 +126,44 @@ def test_attach_repo_branch_falls_back_when_prompt_empty(tmp_path: Path):
     assert wt.branch == "chud/session-sess1"
 
 
+def test_attach_repo_branch_uses_configured_prefix(tmp_path: Path, monkeypatch):
+    """A custom branch_prefix setting flows into the new branch name."""
+    import chud.worktree as wt_mod
+
+    monkeypatch.setattr(wt_mod, "get_branch_prefix", lambda: "agent/")
+    monkeypatch.setattr(wt_mod, "get_include_slug", lambda: True)
+
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "agent/add-foo-sess1"
+
+
+def test_attach_repo_branch_omits_slug_when_disabled(tmp_path: Path, monkeypatch):
+    """include_slug=False yields ``<prefix><id>`` (no slug between)."""
+    import chud.worktree as wt_mod
+
+    monkeypatch.setattr(wt_mod, "get_branch_prefix", lambda: "chud/")
+    monkeypatch.setattr(wt_mod, "get_include_slug", lambda: False)
+
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(
+        id="sess1",
+        workspace_dir=tmp_path / "ws",
+        initial_prompt="some prompt that would normally slug",
+    )
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "chud/sess1"
+
+
 def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
@@ -148,9 +182,7 @@ def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
 def test_detach_repo_removes_worktree(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
@@ -163,9 +195,7 @@ def test_detach_repo_removes_worktree(tmp_path: Path):
 def test_detach_repo_with_dirty_worktree_requires_force(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     (wt.worktree_path / "dirty.txt").write_text("uncommitted")
@@ -181,9 +211,7 @@ def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
     """Empty branch → worktree gone + ``chud/...`` branch ref deleted in origin."""
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
@@ -214,9 +242,7 @@ def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
 
 def test_discard_empty_branch_no_op_for_unknown_repo(tmp_path: Path):
     """Discarding a repo that isn't attached is a silent no-op."""
-    session = SessionState(
-        id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo"
-    )
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     # Should not raise.
     mgr.discard_empty_branch("/does/not/exist")

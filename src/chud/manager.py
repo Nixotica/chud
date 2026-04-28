@@ -9,7 +9,7 @@ from pathlib import Path
 from chud import pr as pr_mod
 from chud import state as state_mod
 from chud.notify import desktop_notify
-from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_options
+from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_effort, normalize_options
 from chud.session import AgentSession
 from chud.types import Event, EventKind, SessionState, SessionStatus
 from chud.worktree import WorktreeManager, is_git_repo
@@ -57,6 +57,7 @@ class SessionManager:
         model: str | None = None,
         options: dict[str, bool] | None = None,
         launch_cwd: Path | None = None,
+        effort: str | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
         workspace = state_mod.workspaces_root() / sid
@@ -65,6 +66,7 @@ class SessionManager:
             workspace_dir=workspace,
             initial_prompt=prompt,
             options=normalize_options(options),
+            effort=normalize_effort(effort),
         )
 
         wt_mgr = WorktreeManager(st)
@@ -91,7 +93,7 @@ class SessionManager:
             model=model,
             launch_cwd=launch_cwd,
             attach_callback=_attach_for_agent,
-        )
+            effort=st.effort)
         self.sessions[sid] = sess
         self.worktrees[sid] = wt_mgr
 
@@ -123,9 +125,7 @@ class SessionManager:
         for sid in list(self.sessions):
             await self.kill_session(sid)
 
-    async def kill_session(
-        self, session_id: str, cleanup_workspace: bool = False
-    ) -> None:
+    async def kill_session(self, session_id: str, cleanup_workspace: bool = False) -> None:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
         wt_mgr = self.worktrees.pop(session_id, None)
@@ -243,14 +243,20 @@ class SessionManager:
         do_cleanup = bool(opts.get(OPT_SELF_CLEANUP))
 
         async def runner(state: SessionState = sess.state) -> None:
+            results: list[pr_mod.PRResult] = []
             if accepted:
-                await self._publish_prs(state, title=title, body=body)
+                results = await self._publish_prs(state, title=title, body=body)
             if do_cleanup:
+                published = [
+                    {"repo": r.repo_label, "url": r.url}
+                    for r in results
+                    if r.error is None and r.url and not r.discarded
+                ]
                 await self._broadcast(
                     Event(
                         session_id=state.id,
                         kind=EventKind.CLEANUP_REQUESTED,
-                        payload={},
+                        payload={"published_prs": published},
                     )
                 )
 
@@ -266,7 +272,7 @@ class SessionManager:
         state: SessionState,
         title: str | None = None,
         body: str | None = None,
-    ) -> None:
+    ) -> list[pr_mod.PRResult]:
         try:
             results = await pr_mod.publish_draft_prs(state, title=title, body=body)
         except Exception as e:
@@ -278,7 +284,7 @@ class SessionManager:
                     payload={"repo": "", "branch": "", "error": repr(e)},
                 )
             )
-            return
+            return []
         wt_mgr = self.worktrees.get(state.id)
         any_discarded_branches = False
         for r in results:
@@ -326,6 +332,7 @@ class SessionManager:
                 )
         if any_discarded_branches:
             self._persist()
+        return results
 
     # ------------------------------------------------------------------ persistence
 

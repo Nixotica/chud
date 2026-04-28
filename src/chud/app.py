@@ -25,6 +25,7 @@ from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 from chud.worktree import detect_cwd_repo
+from chud.widgets.settings_modal import SettingsModal
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class ChudApp(App[None]):
         ("n", "new_session", "New session"),
         ("a", "attach_repo", "Attach repo"),
         ("k", "kill_session", "Kill session"),
+        ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
     ]
 
@@ -144,6 +146,7 @@ class ChudApp(App[None]):
                 repo_path=detected,
                 launch_cwd=launch,
                 options=result.options,
+                effort=result.effort,
             )
         except Exception as e:
             log.exception("create_session failed")
@@ -172,6 +175,20 @@ class ChudApp(App[None]):
             await self.manager.attach_repo(sid, repo)
         except Exception as e:
             self.notify(f"attach_repo failed: {e}", severity="error")
+
+    def action_settings(self) -> None:
+        self.run_worker(self._settings_flow(), exclusive=False)
+
+    async def _settings_flow(self) -> None:
+        # Treat the settings modal like NewSession/AttachRepo: bump the user
+        # modal depth so any session-driven prompt (PLAN, CLEANUP, etc.) waits
+        # in the FIFO queue instead of popping over the modal mid-edit.
+        self._user_modal_depth += 1
+        try:
+            await self.push_screen_wait(SettingsModal())
+        finally:
+            self._user_modal_depth -= 1
+            self._maybe_show_next_prompt()
 
     async def action_kill_session(self) -> None:
         sid = self._selected_session_id
@@ -307,7 +324,13 @@ class ChudApp(App[None]):
             )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
             self._enqueue_prompt(
-                PromptRequest(session_id=event.session_id, kind="cleanup")
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="cleanup",
+                    payload={
+                        "published_prs": list(event.payload.get("published_prs", []) or []),
+                    },
+                )
             )
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             self._enqueue_prompt(
@@ -325,17 +348,13 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
-            view.transcript.write(
-                f"[bold green]+ draft PR:[/bold green] {repo} → {url}"
-            )
+            view.transcript.write(f"[bold green]+ draft PR:[/bold green] {repo} → {url}")
         elif event.kind == EventKind.PR_FAILED:
             err = event.payload.get("error", "")
             repo = event.payload.get("repo", "")
             self.notify(f"PR failed ({repo}): {err}", severity="error")
             view = self.query_one(SessionView)
-            view.transcript.write(
-                f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}"
-            )
+            view.transcript.write(f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}")
         elif event.kind == EventKind.WORKTREE_DISCARDED:
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
@@ -362,10 +381,7 @@ class ChudApp(App[None]):
             and self._prompt_active.kind == req.kind
         ):
             return
-        if any(
-            p.session_id == req.session_id and p.kind == req.kind
-            for p in self._prompt_queue
-        ):
+        if any(p.session_id == req.session_id and p.kind == req.kind for p in self._prompt_queue):
             return
         self._prompt_queue.append(req)
         self._maybe_show_next_prompt()
@@ -409,21 +425,15 @@ class ChudApp(App[None]):
 
     def _drop_session_prompts(self, session_id: str) -> None:
         """Remove any queued/active prompts for a session that's going away."""
-        self._prompt_queue = [
-            p for p in self._prompt_queue if p.session_id != session_id
-        ]
-        if (
-            self._prompt_active is not None
-            and self._prompt_active.session_id == session_id
-        ):
+        self._prompt_queue = [p for p in self._prompt_queue if p.session_id != session_id]
+        if self._prompt_active is not None and self._prompt_active.session_id == session_id:
             self._prompt_active = None
             self._maybe_show_next_prompt()
 
     def _drop_session_input_prompts(self, session_id: str) -> None:
         """Clear stale 'input' prompts when a session leaves AWAITING_USER."""
         self._prompt_queue = [
-            p for p in self._prompt_queue
-            if not (p.session_id == session_id and p.kind == "input")
+            p for p in self._prompt_queue if not (p.session_id == session_id and p.kind == "input")
         ]
         if (
             self._prompt_active is not None
@@ -475,11 +485,12 @@ class ChudApp(App[None]):
             return
         self._open_cleanup_modals.add(session_id)
         state = sess.state
+        published_prs = list(req.payload.get("published_prs", []) or [])
 
         async def show_modal() -> None:
             try:
                 confirmed = await self.push_screen_wait(
-                    CleanupConfirmationModal(state=state)
+                    CleanupConfirmationModal(state=state, published_prs=published_prs)
                 )
                 if not confirmed:
                     return
@@ -567,9 +578,7 @@ class ChudApp(App[None]):
                 if isinstance(result, str) and result:
                     await sess.answer_question(result)
                 else:
-                    await sess.answer_question(
-                        "(user dismissed the question without answering)"
-                    )
+                    await sess.answer_question("(user dismissed the question without answering)")
             finally:
                 self._open_question_modals.discard(session_id)
                 self._resolve_active_prompt(req)
@@ -593,9 +602,15 @@ class ChudApp(App[None]):
 def main() -> int:
     import argparse
 
+    from chud import __version__
     from chud.dev import SCENARIOS
 
     parser = argparse.ArgumentParser(prog="chud")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--dev",
         choices=sorted(SCENARIOS.keys()),

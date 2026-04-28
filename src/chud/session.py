@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -28,6 +28,7 @@ from claude_agent_sdk.types import (
 )
 
 from chud.tools import AttachCallback, build_chud_mcp_server
+from chud.options import EffortLevel
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
 log = logging.getLogger(__name__)
@@ -51,11 +52,13 @@ class AgentSession:
         model: str | None = None,
         launch_cwd: Path | None = None,
         attach_callback: AttachCallback | None = None,
+        effort: str | None = None,
     ) -> None:
         self.state = state
         self.model = model
         self._launch_cwd = launch_cwd
         self._attach_callback = attach_callback
+        self.effort = effort
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -91,6 +94,7 @@ class AgentSession:
         else:
             cwd = self.state.workspace_dir
 
+        effort = cast(EffortLevel | None, self.effort)
         # Per-session in-process MCP server exposing chud-native tools to the
         # agent (e.g. attach_repo). Skipped when no callback was wired in so
         # tests/standalone uses don't pay for an unused server.
@@ -109,6 +113,7 @@ class AgentSession:
                 "Notification": [HookMatcher(hooks=[self._on_notification_hook])],
             },
             model=self.model,
+            effort=effort,
         )
         if mcp_servers:
             options_kwargs["mcp_servers"] = mcp_servers
@@ -132,16 +137,12 @@ class AgentSession:
         # logs "Error in hook callback hook_0: Stream closed" when its control
         # request can't reach us.
         if self._plan_decision is not None and not self._plan_decision.done():
-            self._plan_decision.set_result(
-                PermissionResultDeny(message="Session stopped.")
-            )
+            self._plan_decision.set_result(PermissionResultDeny(message="Session stopped."))
         self._plan_decision = None
         self._pending_plan_text = None
 
         if self._question_decision is not None and not self._question_decision.done():
-            self._question_decision.set_result(
-                PermissionResultDeny(message="Session stopped.")
-            )
+            self._question_decision.set_result(PermissionResultDeny(message="Session stopped."))
         self._question_decision = None
         self._pending_question_input = None
 
@@ -341,7 +342,7 @@ class AgentSession:
         if self.state.status == status:
             return
         self.state.status = status
-        self.state.last_activity_at = datetime.now(timezone.utc)
+        self.state.last_activity_at = datetime.now(UTC)
         await self._emit(EventKind.STATUS_CHANGED, {"status": status.value})
 
     async def _emit(self, kind: EventKind, payload: dict[str, Any]) -> None:
