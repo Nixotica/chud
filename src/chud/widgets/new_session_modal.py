@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.suggester import SuggestFromList
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
 from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
-    get_recent_repo_paths,
     load_user_config,
     save_user_config,
     user_default_effort,
@@ -27,42 +23,19 @@ _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v i
 
 @dataclass
 class NewSessionResult:
-    repo_path: Path | None
     prompt: str
     options: dict[str, bool] = field(default_factory=user_default_options)
     effort: str | None = None
 
 
-def _detect_cwd_repo() -> str:
-    """If CWD is inside a git repo, return its toplevel path; else empty string."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            cwd=Path.cwd(),
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _safe_recent_repos() -> list[str]:
-    """Return recent repo paths for autocomplete, swallowing any load errors.
-
-    The modal must open even if `sessions.json` is missing or malformed, so we
-    fall back to an empty list and let the suggester silently no-op.
-    """
-    try:
-        return get_recent_repo_paths()
-    except Exception:
-        return []
-
-
 class NewSessionModal(ModalScreen[NewSessionResult | None]):
-    """Prompt user for an optional repo path + an initial prompt for a new session."""
+    """Prompt the user for an initial prompt + options for a new session.
+
+    The repo to attach is derived automatically from chud's launch directory
+    (see ``chud.worktree.detect_cwd_repo``); when chud isn't inside a git
+    repo, the session starts unattached and the agent uses the
+    ``mcp__chud__attach_repo`` tool to attach repos itself.
+    """
 
     DEFAULT_CSS = """
     NewSessionModal {
@@ -79,9 +52,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     NewSessionModal Label {
         height: 1;
         color: $text-muted;
-    }
-    NewSessionModal Input {
-        margin-bottom: 1;
     }
     NewSessionModal TextArea {
         height: 8;
@@ -128,13 +98,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("[bold]New session[/bold]")
-            yield Label("Repo path (optional — Tab/→ to accept suggestion):")
-            yield Input(
-                value=_detect_cwd_repo(),
-                placeholder="/path/to/repo",
-                id="repo",
-                suggester=SuggestFromList(_safe_recent_repos(), case_sensitive=True),
-            )
             yield Label("Initial prompt:")
             yield TextArea("", id="prompt")
             defaults = user_default_options()
@@ -203,20 +166,17 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         self._submit()
 
     def on_mount(self) -> None:
-        self.query_one("#repo", Input).focus()
+        self.query_one("#prompt", TextArea).focus()
 
     def _submit(self) -> None:
-        repo_str = self.query_one("#repo", Input).value.strip()
         prompt = self.query_one("#prompt", TextArea).text.strip()
         if not prompt:
             return
-        repo_path = Path(repo_str).expanduser() if repo_str else None
         options = {
             opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
         }
         self.dismiss(
             NewSessionResult(
-                repo_path=repo_path,
                 prompt=prompt,
                 options=options,
                 effort=self._read_effort(),

@@ -39,8 +39,9 @@ jobs:
         id: version
         run: |
           version=$(ls dist/*.whl | head -n1 | sed -E 's|.*/chud-([^-]+)-.*|\1|')
+          short_sha=$(git rev-parse --short=7 "${{ github.event.workflow_run.head_sha }}")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=unstable-$version" >> "$GITHUB_OUTPUT"
+          echo "tag=unstable-$short_sha" >> "$GITHUB_OUTPUT"
 
       - name: Publish prerelease
         uses: softprops/action-gh-release@v2

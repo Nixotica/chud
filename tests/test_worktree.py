@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from chud.types import SessionState
-from chud.worktree import WorktreeError, WorktreeManager, _slugify, is_git_repo
+from chud.worktree import (
+    WorktreeError,
+    WorktreeManager,
+    _slugify,
+    detect_cwd_repo,
+    is_git_repo,
+)
 
 
 def _init_repo(path: Path) -> None:
@@ -29,6 +35,37 @@ def test_is_git_repo(tmp_path: Path):
     assert not is_git_repo(tmp_path)
     _init_repo(tmp_path)
     assert is_git_repo(tmp_path)
+
+
+def test_detect_cwd_repo_outside_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """When CWD is not in a git repo, detect_cwd_repo() returns None — this
+    is what tells the new-session flow to start a session unattached and let
+    the agent attach repos via mcp__chud__attach_repo."""
+    monkeypatch.chdir(tmp_path)
+    assert detect_cwd_repo() is None
+
+
+def test_detect_cwd_repo_inside_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """When CWD is the toplevel of a git repo, detect_cwd_repo() returns
+    that toplevel so the new-session flow can auto-attach it."""
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    monkeypatch.chdir(repo)
+    detected = detect_cwd_repo()
+    assert detected is not None
+    assert detected.resolve() == repo.resolve()
+
+
+def test_detect_cwd_repo_inside_repo_subdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """detect_cwd_repo() walks up from a subdirectory to the toplevel."""
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    sub = repo / "src" / "deep"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    detected = detect_cwd_repo()
+    assert detected is not None
+    assert detected.resolve() == repo.resolve()
 
 
 def test_attach_repo_creates_worktree(tmp_path: Path):

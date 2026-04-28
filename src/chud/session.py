@@ -28,6 +28,7 @@ from claude_agent_sdk.types import (
 )
 
 from chud.options import EffortLevel
+from chud.tools import AttachCallback, build_chud_mcp_server
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
 log = logging.getLogger(__name__)
@@ -49,10 +50,14 @@ class AgentSession:
         state: SessionState,
         *,
         model: str | None = None,
+        launch_cwd: Path | None = None,
+        attach_callback: AttachCallback | None = None,
         effort: str | None = None,
     ) -> None:
         self.state = state
         self.model = model
+        self._launch_cwd = launch_cwd
+        self._attach_callback = attach_callback
         self.effort = effort
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
@@ -76,24 +81,52 @@ class AgentSession:
         self.state.initial_prompt = prompt
 
         # If exactly one repo is attached, run the agent inside that worktree so
-        # its tools see a real git checkout. With 0 or 2+ repos, fall back to
-        # the workspace root: 0 repos = scratch dir for non-repo work; 2+ repos
-        # = parent of all worktree subdirs so the agent can `cd` between them.
+        # its tools see a real git checkout. With 0 attached repos, prefer the
+        # user's launch directory (so the agent can `ls` and discover sibling
+        # repos to attach via mcp__chud__attach_repo); fall back to the
+        # workspace root when no launch dir was provided. With 2+ repos, use
+        # the workspace root so the agent can `cd` between worktree subdirs.
         attached = list(self.state.attached_repos.values())
-        cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
+        if len(attached) == 1:
+            cwd = attached[0].worktree_path
+        elif len(attached) == 0 and self._launch_cwd is not None:
+            cwd = self._launch_cwd
+        else:
+            cwd = self.state.workspace_dir
 
         effort = cast(EffortLevel | None, self.effort)
-        options = ClaudeAgentOptions(
+        # Per-session in-process MCP server exposing chud-native tools to the
+        # agent (e.g. attach_repo). Skipped when no callback was wired in so
+        # tests/standalone uses don't pay for an unused server.
+        mcp_servers: dict[str, Any] = {}
+        allowed_extras: list[str] = []
+        if self._attach_callback is not None:
+            mcp_servers["chud"] = build_chud_mcp_server(self._attach_callback)
+            allowed_extras.append("mcp__chud__attach_repo")
+
+        options_kwargs: dict[str, Any] = dict(
             cwd=cwd,
             permission_mode="plan",
             can_use_tool=self._on_tool_request,
             hooks={
                 "Stop": [HookMatcher(hooks=[self._on_stop_hook])],
                 "Notification": [HookMatcher(hooks=[self._on_notification_hook])],
+                # PreToolUse fires for every tool call regardless of
+                # permission_mode, so it's the only reliable enforcement point
+                # once we flip to acceptEdits — can_use_tool is bypassed for
+                # auto-allowed tools in that mode.
+                "PreToolUse": [HookMatcher(hooks=[self._on_pre_tool_use_hook])],
             },
             model=self.model,
             effort=effort,
         )
+        if mcp_servers:
+            options_kwargs["mcp_servers"] = mcp_servers
+            # Setting allowed_tools restricts the model to that list, so we
+            # only set it when we actually need to allow our extras through.
+            options_kwargs["allowed_tools"] = allowed_extras
+
+        options = ClaudeAgentOptions(**options_kwargs)
 
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
@@ -216,9 +249,113 @@ class AgentSession:
             await self._emit(EventKind.QUESTION_ASKED, {"input": dict(tool_input)})
             return await self._question_decision
 
-        # Default: allow. Future iterations may add a deny-list or interactive gating
-        # for non-plan tools (e.g., destructive Bash). v1 trusts acceptEdits.
+        reason = self._check_filesystem_access(tool_name, tool_input)
+        if reason is not None:
+            return PermissionResultDeny(message=reason)
+
         return PermissionResultAllow()
+
+    # Edit/Write/NotebookEdit expose the target path in their tool input under
+    # these keys; we resolve and check it against attached worktrees.
+    _PATH_TOOL_ARG: dict[str, str] = {
+        "Edit": "file_path",
+        "Write": "file_path",
+        "NotebookEdit": "notebook_path",
+    }
+
+    def _check_filesystem_access(self, tool_name: str, tool_input: dict[str, Any]) -> str | None:
+        """Gate filesystem-mutating tools to attached worktrees.
+
+        Layer 1 (pre-attach): with no repos attached, deny Edit/Write/
+        NotebookEdit/Bash so the agent must call ``mcp__chud__attach_repo``
+        first. Read-only tools (Read/Grep/Glob/LS) stay open for discovery.
+
+        Layer 2 (path gate): once repos are attached, deny path-typed tools
+        whose target falls outside any attached worktree. Bash is not vetted
+        here — Layer 3b sets the SDK cwd to the worktree at session start so
+        agents passively land inside the worktree without static parsing.
+
+        Plan mode already disables edits, so this gate only applies after the
+        plan has been approved (status EXECUTING / AWAITING_USER).
+        """
+        if self.state.status in (
+            SessionStatus.NEW,
+            SessionStatus.PLANNING,
+            SessionStatus.AWAITING_PLAN_APPROVAL,
+        ):
+            return None
+
+        is_path_tool = tool_name in self._PATH_TOOL_ARG
+        is_bash = tool_name == "Bash"
+        if not (is_path_tool or is_bash):
+            return None
+
+        attached = self.state.attached_repos
+        if not attached:
+            return (
+                f"chud: {tool_name} is not allowed before any repo is attached "
+                f"to this session. Use Read/Glob/LS to discover candidate "
+                f"repos, then call mcp__chud__attach_repo with the absolute "
+                f"path to a git repo toplevel. After attach, edits and Bash "
+                f"are allowed inside the resulting worktree."
+            )
+
+        if not is_path_tool:
+            return None
+
+        arg_name = self._PATH_TOOL_ARG[tool_name]
+        raw = tool_input.get(arg_name)
+        if not isinstance(raw, str) or not raw:
+            return None  # malformed — let the tool surface its own error.
+
+        target = Path(raw).expanduser()
+        try:
+            resolved_target = target.resolve()
+        except OSError:
+            resolved_target = target.absolute()
+
+        worktree_paths = [wt.worktree_path.resolve() for wt in attached.values()]
+        for wp in worktree_paths:
+            try:
+                resolved_target.relative_to(wp)
+                return None
+            except ValueError:
+                continue
+
+        listed = ", ".join(str(wp) for wp in worktree_paths)
+        return (
+            f"chud: {tool_name} blocked — {resolved_target} is outside this "
+            f"session's attached worktrees ({listed}). To edit a different "
+            f"repo, call mcp__chud__attach_repo with the repo toplevel; chud "
+            f"will create a worktree on branch chud/{self.state.id} under "
+            f"{self.state.workspace_dir} and you should edit that copy "
+            f"instead of the user's main checkout."
+        )
+
+    async def _on_pre_tool_use_hook(
+        self,
+        input_data: HookInput,
+        tool_use_id: str | None,
+        context: HookContext,
+    ) -> HookJSONOutput:
+        """Enforce the filesystem gate for every tool call.
+
+        Unlike ``can_use_tool``, PreToolUse hooks fire even when permission_mode
+        is ``acceptEdits`` — so this is the gate that actually runs once the
+        user approves a plan.
+        """
+        tool_name = cast(str, input_data.get("tool_name", ""))
+        tool_input = cast(dict[str, Any], input_data.get("tool_input", {}))
+        reason = self._check_filesystem_access(tool_name, tool_input)
+        if reason is None:
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
 
     async def _on_stop_hook(
         self,

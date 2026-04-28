@@ -56,6 +56,7 @@ class SessionManager:
         repo_path: Path | None = None,
         model: str | None = None,
         options: dict[str, bool] | None = None,
+        launch_cwd: Path | None = None,
         effort: str | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
@@ -81,7 +82,19 @@ class SessionManager:
                 )
             )
 
-        sess = AgentSession(st, model=model, effort=st.effort)
+        # Per-session attach callback that the in-process MCP server hands
+        # to the agent via mcp__chud__attach_repo. Bind sid via default arg
+        # so the closure can't accidentally capture a later session's id.
+        async def _attach_for_agent(repo: Path, _sid: str = sid) -> None:
+            await self.attach_repo(_sid, repo)
+
+        sess = AgentSession(
+            st,
+            model=model,
+            launch_cwd=launch_cwd,
+            attach_callback=_attach_for_agent,
+            effort=st.effort,
+        )
         self.sessions[sid] = sess
         self.worktrees[sid] = wt_mgr
 

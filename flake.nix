@@ -44,14 +44,18 @@
               echo ">>> creating .venv and installing pinned deps from requirements.lock"
               uv venv .venv --python 3.12
               uv pip sync --python .venv/bin/python requirements.lock
-              uv pip install --python .venv/bin/python -e . --no-deps
             fi
+
+            # Always (re)install chud editable — it's the only way pytest can
+            # `import chud`, and the previous gating made a failed install
+            # sticky across runs.
+            uv pip install --python .venv/bin/python -e . --no-deps
 
             echo ">>> ruff format"
             ruff format .
 
-            echo ">>> ruff check"
-            ruff check .
+            echo ">>> ruff check --fix"
+            ruff check --fix .
 
             echo ">>> ruff format --check"
             ruff format --check .
