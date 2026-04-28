@@ -48,9 +48,10 @@ def save_all(sessions: dict[str, SessionState]) -> None:
 def load_user_config() -> dict[str, Any]:
     """Load persisted user defaults; return {} if missing or unreadable.
 
-    The config dict is heterogeneous: it holds the boolean option toggles
-    (keys in the ``SESSION_OPTIONS`` registry) alongside the per-user default
-    ``effort`` string, so the value type is ``Any``.
+    Values may be ``bool`` (per-session option toggles, see ``options.py``) or
+    other JSON-native types like ``str`` (settings such as ``branch_prefix``,
+    see ``settings.py``). Callers are responsible for type-checking individual
+    keys.
     """
     path = config_file()
     if not path.exists():

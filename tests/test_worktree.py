@@ -87,6 +87,44 @@ def test_attach_repo_branch_falls_back_when_prompt_empty(tmp_path: Path):
     assert wt.branch == "chud/session-sess1"
 
 
+def test_attach_repo_branch_uses_configured_prefix(tmp_path: Path, monkeypatch):
+    """A custom branch_prefix setting flows into the new branch name."""
+    import chud.worktree as wt_mod
+
+    monkeypatch.setattr(wt_mod, "get_branch_prefix", lambda: "agent/")
+    monkeypatch.setattr(wt_mod, "get_include_slug", lambda: True)
+
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "agent/add-foo-sess1"
+
+
+def test_attach_repo_branch_omits_slug_when_disabled(tmp_path: Path, monkeypatch):
+    """include_slug=False yields ``<prefix><id>`` (no slug between)."""
+    import chud.worktree as wt_mod
+
+    monkeypatch.setattr(wt_mod, "get_branch_prefix", lambda: "chud/")
+    monkeypatch.setattr(wt_mod, "get_include_slug", lambda: False)
+
+    repo = tmp_path / "myrepo"
+    _init_repo(repo)
+    session = SessionState(
+        id="sess1",
+        workspace_dir=tmp_path / "ws",
+        initial_prompt="some prompt that would normally slug",
+    )
+    mgr = WorktreeManager(session)
+
+    wt = mgr.attach_repo(repo)
+
+    assert wt.branch == "chud/sess1"
+
+
 def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)

@@ -9,7 +9,16 @@ from chud.types import SessionState
 
 
 class CleanupConfirmationModal(ModalScreen[bool]):
-    """Confirm destructive cleanup of a finished session.
+    """Confirm cleanup of a finished session.
+
+    Two visual modes, selected by ``published_prs``:
+
+    - **Empty** (no PRs published — session opted out, user rejected the PR
+      review, or every gh push failed): destructive red copy warning that
+      unpushed commits will be lost.
+    - **Non-empty**: the work is safely on the remote and linked from at
+      least one draft PR; render a calmer success-flavored confirmation
+      that lists the PR URL(s).
 
     Returns True on confirm, False on cancel/escape. The caller is responsible
     for actually invoking ``manager.kill_session(..., cleanup_workspace=True)``
@@ -54,37 +63,73 @@ class CleanupConfirmationModal(ModalScreen[bool]):
         ("n", "cancel", "Cancel"),
     ]
 
-    def __init__(self, state: SessionState) -> None:
+    def __init__(
+        self,
+        state: SessionState,
+        published_prs: list[dict[str, str]] | None = None,
+    ) -> None:
         super().__init__()
         self.state = state
+        self.published_prs = list(published_prs or [])
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(
-                f"[bold]Clean up session {self.state.id[:8]}?[/bold]",
-                id="title",
-            )
-            with VerticalScroll():
-                yield Static(
-                    "This will [red]permanently delete[/red] the workspace "
-                    "directory and remove all attached worktrees:"
-                )
-                yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
-                if self.state.attached_repos:
-                    for wt in self.state.attached_repos.values():
-                        yield Static(
-                            f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
-                            f"[dim](branch {wt.branch})[/dim]"
-                        )
-                else:
-                    yield Static("  [dim](no attached repos)[/dim]")
-                yield Static(
-                    "\nUnpushed commits on the chud branch will be lost unless "
-                    "you also enabled the draft-PR option."
-                )
+            if self.published_prs:
+                yield from self._compose_published()
+            else:
+                yield from self._compose_unpublished()
             with Horizontal():
                 yield Button("Cancel (n)", id="cancel")
-                yield Button("Confirm (y)", id="confirm", variant="error")
+                if self.published_prs:
+                    yield Button("Confirm (y)", id="confirm", variant="success")
+                else:
+                    yield Button("Confirm (y)", id="confirm", variant="error")
+
+    def _compose_published(self) -> ComposeResult:
+        yield Static(
+            f"[bold]Clean up session {self.state.id[:8]}? Work is pushed.[/bold]",
+            id="title",
+        )
+        with VerticalScroll():
+            yield Static("[bold green]Draft PRs opened:[/bold green]")
+            for pr in self.published_prs:
+                repo = pr.get("repo") or "(repo)"
+                url = pr.get("url") or ""
+                yield Static(f"  • [cyan]{repo}[/cyan] → [green]{url}[/green]")
+            yield Static("\nRemoving the workspace and worktrees:")
+            yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
+            if self.state.attached_repos:
+                for wt in self.state.attached_repos.values():
+                    yield Static(
+                        f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
+                        f"[dim](branch {wt.branch})[/dim]"
+                    )
+            else:
+                yield Static("  [dim](no attached repos)[/dim]")
+
+    def _compose_unpublished(self) -> ComposeResult:
+        yield Static(
+            f"[bold]Clean up session {self.state.id[:8]}?[/bold]",
+            id="title",
+        )
+        with VerticalScroll():
+            yield Static(
+                "This will [red]permanently delete[/red] the workspace "
+                "directory and remove all attached worktrees:"
+            )
+            yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
+            if self.state.attached_repos:
+                for wt in self.state.attached_repos.values():
+                    yield Static(
+                        f"  • worktree:  [yellow]{wt.worktree_path}[/yellow]  "
+                        f"[dim](branch {wt.branch})[/dim]"
+                    )
+            else:
+                yield Static("  [dim](no attached repos)[/dim]")
+            yield Static(
+                "\nUnpushed commits on the chud branch will be lost unless "
+                "you also enabled the draft-PR option."
+            )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "confirm":

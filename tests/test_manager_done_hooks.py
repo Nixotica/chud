@@ -305,6 +305,83 @@ async def test_accepted_pr_and_cleanup_orders_events(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_payload_carries_published_prs(tmp_path, monkeypatch):
+    """CLEANUP_REQUESTED's payload must include the list of successful PRs so
+    the cleanup modal can render them without a separate event-log lookup.
+
+    Mixed success/failure: only successful entries (``error is None`` and a
+    truthy URL, not discarded) make it into ``published_prs``.
+    """
+    mgr = SessionManager()
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path)
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    async def fake_publish(state, title=None, body=None):
+        return [
+            PRResult(repo_label="ok", branch="b1", url="https://example/pr/1"),
+            PRResult(repo_label="fail", branch="b2", error="boom"),
+            PRResult(repo_label="empty", branch="b3", discarded=True),
+        ]
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", fake_publish)
+
+    queue = mgr.subscribe()
+    await mgr._handle_event(_done_event(sess.state.id), sess)
+    while not queue.empty():
+        queue.get_nowait()
+
+    await mgr.submit_pr_review(sess.state.id, accepted=True)
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    cleanup_events = []
+    while not queue.empty():
+        ev = queue.get_nowait()
+        if ev.kind == EventKind.CLEANUP_REQUESTED:
+            cleanup_events.append(ev)
+
+    assert len(cleanup_events) == 1
+    assert cleanup_events[0].payload == {
+        "published_prs": [{"repo": "ok", "url": "https://example/pr/1"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_payload_empty_on_publish_failure(tmp_path, monkeypatch):
+    """When publish raises, CLEANUP_REQUESTED still fires with empty
+    ``published_prs`` so the modal falls back to the destructive-warning copy.
+    """
+    mgr = SessionManager()
+    sess = _make_session({OPT_MAKE_DRAFT_PR: True, OPT_SELF_CLEANUP: True}, tmp_path)
+    mgr.sessions[sess.state.id] = sess
+    monkeypatch.setattr(mgr, "_persist", lambda: None)
+
+    async def boom(state, title=None, body=None):
+        raise RuntimeError("publish exploded")
+
+    monkeypatch.setattr(pr_mod, "publish_draft_prs", boom)
+
+    queue = mgr.subscribe()
+    await mgr._handle_event(_done_event(sess.state.id), sess)
+    while not queue.empty():
+        queue.get_nowait()
+
+    await mgr.submit_pr_review(sess.state.id, accepted=True)
+    for task in list(mgr._pr_tasks.values()):
+        await task
+
+    cleanup_events = []
+    while not queue.empty():
+        ev = queue.get_nowait()
+        if ev.kind == EventKind.CLEANUP_REQUESTED:
+            cleanup_events.append(ev)
+
+    assert len(cleanup_events) == 1
+    assert cleanup_events[0].payload == {"published_prs": []}
+
+
+@pytest.mark.asyncio
 async def test_accepted_pr_failure_still_emits_cleanup(tmp_path, monkeypatch):
     """If PR publish raises after the user accepts, cleanup is still offered
     (after PR_FAILED)."""

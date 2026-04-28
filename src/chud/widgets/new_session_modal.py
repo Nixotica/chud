@@ -165,14 +165,11 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
             )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
-                yield Button("Save as defaults", id="save-defaults")
                 yield Button("Start (F2)", id="start", variant="success")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
-        elif event.button.id == "save-defaults":
-            self._save_defaults()
         elif event.button.id == "start":
             self._submit()
 
