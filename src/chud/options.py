@@ -8,24 +8,24 @@ the key on the next persistence round-trip.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, get_args
 
-# Mirror of the inline ``Literal`` on ``ClaudeAgentOptions.effort`` in
-# claude-agent-sdk's types.py — the SDK does not export a named alias or a
-# tuple of valid values, so we keep our own source of truth here.
-EFFORT_VALUES: tuple[str | None, ...] = (None, "low", "medium", "high", "max")
-DEFAULT_EFFORT: str | None = None
+# Single source of truth for effort strings. Mirrors the inline ``Literal`` on
+# ``ClaudeAgentOptions.effort`` in claude-agent-sdk's types.py — the SDK does
+# not export a named alias.
+EffortLevel = Literal["low", "medium", "high", "max"]
+EFFORT_VALUES: tuple[EffortLevel, ...] = get_args(EffortLevel)
 
 
-def normalize_effort(raw: object) -> str | None:
+def normalize_effort(raw: object) -> EffortLevel | None:
     """Coerce a persisted/raw effort value to a known choice (or ``None``).
 
-    Unknown / legacy / wrong-type values silently fall back to the default so
+    Unknown / legacy / wrong-type values silently fall back to ``None`` so
     that a corrupted ``sessions.json`` or stale config can't crash the app.
     """
     if raw in EFFORT_VALUES:
         return raw  # type: ignore[return-value]
-    return DEFAULT_EFFORT
+    return None
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ import contextlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -27,6 +27,7 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
+from chud.options import EffortLevel
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
 log = logging.getLogger(__name__)
@@ -81,10 +82,7 @@ class AgentSession:
         attached = list(self.state.attached_repos.values())
         cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
 
-        # ``ClaudeAgentOptions.effort`` is typed as a narrow Literal in the
-        # SDK; chud carries it as ``str | None`` (validated by
-        # ``normalize_effort`` upstream), so cast at the boundary.
-        effort = cast(Literal["low", "medium", "high", "max"] | None, self.effort)
+        effort = cast(EffortLevel | None, self.effort)
         options = ClaudeAgentOptions(
             cwd=cwd,
             permission_mode="plan",

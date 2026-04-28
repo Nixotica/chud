@@ -7,12 +7,7 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
-from chud.types import SessionState
-
-# Key under which the per-user default effort is stored in ``config.json``.
-# Mirrors ``KEY_EFFORT`` in chud.types but lives independently because the
-# config file is a flat dict mixing option toggles and the effort string.
-CONFIG_KEY_EFFORT = "effort"
+from chud.types import KEY_EFFORT, SessionState
 
 
 def data_root() -> Path:
@@ -86,7 +81,25 @@ def user_default_effort() -> str | None:
     """Persisted default effort, or ``None`` if unset / invalid."""
     from chud.options import normalize_effort
 
-    return normalize_effort(load_user_config().get(CONFIG_KEY_EFFORT))
+    return normalize_effort(load_user_config().get(KEY_EFFORT))
+
+
+def claude_settings_effort() -> str | None:
+    """Best-effort read of ``effortLevel`` from ``~/.claude/settings.json``.
+
+    Lets chud surface the user's Claude Code-level effort preference as the
+    new-session default when no chud-specific default has been saved.
+    """
+    from chud.options import normalize_effort
+
+    path = Path.home() / ".claude" / "settings.json"
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return normalize_effort(raw.get("effortLevel"))
 
 
 def get_recent_repo_paths() -> list[str]:

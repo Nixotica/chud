@@ -47,10 +47,8 @@ def test_normalize_options_coerces_truthy_values_to_bool():
     assert out[OPT_SELF_CLEANUP] is False
 
 
-def test_effort_values_contains_default_and_known_levels():
-    assert None in EFFORT_VALUES
-    for level in ("low", "medium", "high", "max"):
-        assert level in EFFORT_VALUES
+def test_effort_values_contains_known_levels():
+    assert set(EFFORT_VALUES) == {"low", "medium", "high", "max"}
 
 
 def test_normalize_effort_accepts_known_values():

@@ -11,28 +11,18 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
 
-from chud.options import SESSION_OPTIONS
+from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
-    CONFIG_KEY_EFFORT,
+    claude_settings_effort,
     get_recent_repo_paths,
     load_user_config,
     save_user_config,
     user_default_effort,
     user_default_options,
 )
+from chud.types import KEY_EFFORT
 
-# Sentinel value used inside the Select to represent "use the SDK default
-# effort" — Textual's Select.NULL is reserved for the unselected state, so we
-# round-trip through this string and translate it to ``None`` on submit.
-_EFFORT_DEFAULT_SENTINEL = "default"
-
-_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
-    ("Default", _EFFORT_DEFAULT_SENTINEL),
-    ("Low", "low"),
-    ("Medium", "medium"),
-    ("High", "high"),
-    ("Max", "max"),
-)
+_EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
 
 
 @dataclass
@@ -158,12 +148,16 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                         tooltip=opt.description,
                     )
             yield Label("Effort:")
-            initial_effort = user_default_effort() or _EFFORT_DEFAULT_SENTINEL
+            default_effort = user_default_effort() or claude_settings_effort()
+            choices = tuple(
+                (f"{label} (default)" if value == default_effort else label, value)
+                for label, value in _EFFORT_CHOICES
+            )
             yield Select(
-                _EFFORT_CHOICES,
-                id="effort",
-                allow_blank=False,
-                value=initial_effort,
+                choices,
+                id=KEY_EFFORT,
+                allow_blank=default_effort is None,
+                value=default_effort if default_effort is not None else Select.BLANK,
                 tooltip=(
                     "Reasoning effort hint for the agent. "
                     "Default leaves it to the SDK; higher values trade speed for thoroughness."
@@ -190,14 +184,14 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         # keys (e.g. future settings) that other code paths may have written.
         config = load_user_config()
         config.update(options)
-        config[CONFIG_KEY_EFFORT] = self._read_effort()
+        config[KEY_EFFORT] = self._read_effort()
         save_user_config(config)
         self.app.notify("Saved as defaults.")
 
     def _read_effort(self) -> str | None:
-        """Read the effort Select, translating the sentinel back to ``None``."""
+        """Read the effort Select; blank (no selection) maps to ``None``."""
         raw = self.query_one("#effort", Select).value
-        if raw == _EFFORT_DEFAULT_SENTINEL or not isinstance(raw, str):
+        if not isinstance(raw, str):
             return None
         return raw
 
