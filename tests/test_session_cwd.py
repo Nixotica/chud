@@ -85,6 +85,28 @@ async def test_start_with_single_repo_uses_worktree_path(tmp_path, patched_clien
         await sess.stop()
 
 
+async def test_start_forwards_effort_to_sdk_options(tmp_path, patched_client):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sess = AgentSession(_state(workspace), effort="high")
+    try:
+        await sess.start("hello")
+        assert patched_client.last_options.effort == "high"
+    finally:
+        await sess.stop()
+
+
+async def test_start_with_no_effort_passes_none(tmp_path, patched_client):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sess = AgentSession(_state(workspace))
+    try:
+        await sess.start("hello")
+        assert patched_client.last_options.effort is None
+    finally:
+        await sess.stop()
+
+
 async def test_start_with_two_repos_uses_workspace_dir(tmp_path, patched_client):
     workspace = tmp_path / "ws"
     workspace.mkdir()

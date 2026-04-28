@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -27,6 +27,7 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
+from chud.options import EffortLevel
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
 log = logging.getLogger(__name__)
@@ -48,9 +49,11 @@ class AgentSession:
         state: SessionState,
         *,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self.state = state
         self.model = model
+        self.effort = effort
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -79,6 +82,7 @@ class AgentSession:
         attached = list(self.state.attached_repos.values())
         cwd = attached[0].worktree_path if len(attached) == 1 else self.state.workspace_dir
 
+        effort = cast(EffortLevel | None, self.effort)
         options = ClaudeAgentOptions(
             cwd=cwd,
             permission_mode="plan",
@@ -88,6 +92,7 @@ class AgentSession:
                 "Notification": [HookMatcher(hooks=[self._on_notification_hook])],
             },
             model=self.model,
+            effort=effort,
         )
 
         self._client = ClaudeSDKClient(options=options)
@@ -309,7 +314,7 @@ class AgentSession:
         if self.state.status == status:
             return
         self.state.status = status
-        self.state.last_activity_at = datetime.now(timezone.utc)
+        self.state.last_activity_at = datetime.now(UTC)
         await self._emit(EventKind.STATUS_CHANGED, {"status": status.value})
 
     async def _emit(self, kind: EventKind, payload: dict[str, Any]) -> None:

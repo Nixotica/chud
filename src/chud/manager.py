@@ -9,7 +9,7 @@ from pathlib import Path
 from chud import pr as pr_mod
 from chud import state as state_mod
 from chud.notify import desktop_notify
-from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_options
+from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_effort, normalize_options
 from chud.session import AgentSession
 from chud.types import Event, EventKind, SessionState, SessionStatus
 from chud.worktree import WorktreeManager, is_git_repo
@@ -56,6 +56,7 @@ class SessionManager:
         repo_path: Path | None = None,
         model: str | None = None,
         options: dict[str, bool] | None = None,
+        effort: str | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
         workspace = state_mod.workspaces_root() / sid
@@ -64,6 +65,7 @@ class SessionManager:
             workspace_dir=workspace,
             initial_prompt=prompt,
             options=normalize_options(options),
+            effort=normalize_effort(effort),
         )
 
         wt_mgr = WorktreeManager(st)
@@ -79,7 +81,7 @@ class SessionManager:
                 )
             )
 
-        sess = AgentSession(st, model=model)
+        sess = AgentSession(st, model=model, effort=st.effort)
         self.sessions[sid] = sess
         self.worktrees[sid] = wt_mgr
 

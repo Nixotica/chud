@@ -18,7 +18,7 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Install dependencies
-        run: nix develop --command bash -c "python -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e '.[dev]'"
+        run: nix develop --command bash -c "uv venv .venv --python 3.12 && uv pip sync --python .venv/bin/python requirements.lock && uv pip install --python .venv/bin/python -e . --no-deps"
 
       - name: Run tests
         run: nix develop --command .venv/bin/pytest
@@ -52,7 +52,7 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Install dependencies
-        run: nix develop --command bash -c "python -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e '.[dev]'"
+        run: nix develop --command bash -c "uv venv .venv --python 3.12 && uv pip sync --python .venv/bin/python requirements.lock && uv pip install --python .venv/bin/python -e . --no-deps"
 
       - name: Pyright
         run: nix develop --command bash -c "source .venv/bin/activate && pyright"

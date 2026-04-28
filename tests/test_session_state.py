@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, default_options
@@ -49,8 +49,8 @@ def test_legacy_session_without_options_loads_with_defaults():
         "status": SessionStatus.DONE.value,
         "initial_prompt": "legacy",
         "attached_repos": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
         "pending_question": None,
         "error": None,
         # no "options" key
@@ -81,6 +81,51 @@ def test_session_state_roundtrips_approved_plan():
     assert s2.approved_plan == plan
 
 
+def test_session_state_roundtrips_effort():
+    s = SessionState(
+        id="abc123",
+        workspace_dir=Path("/tmp/chud-ws/abc123"),
+        effort="high",
+    )
+    d = s.to_dict()
+    assert d["effort"] == "high"
+    s2 = SessionState.from_dict(d)
+    assert s2.effort == "high"
+
+
+def test_session_state_default_effort_is_none():
+    s = SessionState(id="x", workspace_dir=Path("/tmp/x"))
+    d = s.to_dict()
+    assert d["effort"] is None
+    s2 = SessionState.from_dict(d)
+    assert s2.effort is None
+
+
+def test_legacy_session_without_effort_loads_as_none():
+    legacy = {
+        "id": "old1",
+        "workspace_dir": "/tmp/chud-ws/old1",
+        "status": SessionStatus.DONE.value,
+        "initial_prompt": "legacy",
+        "attached_repos": {},
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
+        "pending_question": None,
+        "error": None,
+        # no "effort" key
+    }
+    s = SessionState.from_dict(legacy)
+    assert s.effort is None
+
+
+def test_session_state_normalizes_unknown_persisted_effort():
+    s = SessionState(id="x", workspace_dir=Path("/tmp/x"))
+    d = s.to_dict()
+    d["effort"] = "turbo"  # legacy / corrupt value
+    s2 = SessionState.from_dict(d)
+    assert s2.effort is None
+
+
 def test_legacy_session_without_approved_plan_loads_as_none():
     legacy = {
         "id": "old1",
@@ -88,8 +133,8 @@ def test_legacy_session_without_approved_plan_loads_as_none():
         "status": SessionStatus.DONE.value,
         "initial_prompt": "legacy",
         "attached_repos": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
         "pending_question": None,
         "error": None,
         # no "approved_plan" key

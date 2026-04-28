@@ -81,7 +81,7 @@ async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
     )
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=_RUN_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()

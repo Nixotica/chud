@@ -7,7 +7,7 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
-from chud.types import SessionState
+from chud.types import KEY_EFFORT, SessionState
 
 
 def data_root() -> Path:
@@ -63,11 +63,10 @@ def load_user_config() -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def save_user_config(options: dict[str, Any]) -> None:
-    """Persist ``options`` as the user's full config snapshot (atomic write)."""
+def save_user_config(config: dict[str, Any]) -> None:
     path = config_file()
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(options, indent=2))
+    tmp.write_text(json.dumps(config, indent=2))
     tmp.replace(path)
 
 
@@ -77,6 +76,31 @@ def user_default_options() -> dict[str, bool]:
     from chud.options import normalize_options
 
     return normalize_options(load_user_config())
+
+
+def user_default_effort() -> str | None:
+    """Persisted default effort, or ``None`` if unset / invalid."""
+    from chud.options import normalize_effort
+
+    return normalize_effort(load_user_config().get(KEY_EFFORT))
+
+
+def claude_settings_effort() -> str | None:
+    """Best-effort read of ``effortLevel`` from ``~/.claude/settings.json``.
+
+    Lets chud surface the user's Claude Code-level effort preference as the
+    new-session default when no chud-specific default has been saved.
+    """
+    from chud.options import normalize_effort
+
+    path = Path.home() / ".claude" / "settings.json"
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return normalize_effort(raw.get("effortLevel"))
 
 
 def get_recent_repo_paths() -> list[str]:

@@ -9,10 +9,20 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
-from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
 
-from chud.options import SESSION_OPTIONS
-from chud.state import get_recent_repo_paths, user_default_options
+from chud.options import EFFORT_VALUES, SESSION_OPTIONS
+from chud.state import (
+    claude_settings_effort,
+    get_recent_repo_paths,
+    load_user_config,
+    save_user_config,
+    user_default_effort,
+    user_default_options,
+)
+from chud.types import KEY_EFFORT
+
+_EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
 
 
 @dataclass
@@ -20,6 +30,7 @@ class NewSessionResult:
     repo_path: Path | None
     prompt: str
     options: dict[str, bool] = field(default_factory=user_default_options)
+    effort: str | None = None
 
 
 def _detect_cwd_repo() -> str:
@@ -60,7 +71,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     NewSessionModal > Vertical {
         width: 90%;
         max-width: 100;
-        height: 32;
+        height: 36;
         background: $surface;
         border: round $accent;
         padding: 1 2;
@@ -96,6 +107,9 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     NewSessionModal #options-group Checkbox:focus {
         border: none;
         background: $boost;
+    }
+    NewSessionModal #effort {
+        margin-bottom: 1;
     }
     NewSessionModal Horizontal#buttons {
         height: 3;
@@ -133,6 +147,26 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                         id=f"opt-{opt.id}",
                         tooltip=opt.description,
                     )
+            yield Label("Effort:")
+            default_effort = user_default_effort() or claude_settings_effort()
+            choices = tuple(
+                (f"{label} (default)" if value == default_effort else label, value)
+                for label, value in _EFFORT_CHOICES
+            )
+            tooltip = (
+                "Reasoning effort hint for the agent. "
+                "Default leaves it to the SDK; higher values trade speed for thoroughness."
+            )
+            if default_effort is None:
+                yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
+            else:
+                yield Select(
+                    choices,
+                    id=KEY_EFFORT,
+                    allow_blank=False,
+                    value=default_effort,
+                    tooltip=tooltip,
+                )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Start (F2)", id="start", variant="success")
@@ -142,6 +176,25 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
             self.dismiss(None)
         elif event.button.id == "start":
             self._submit()
+
+    def _save_defaults(self) -> None:
+        options = {
+            opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
+        }
+        # Merge into the existing config dict so we don't clobber unrelated
+        # keys (e.g. future settings) that other code paths may have written.
+        config = load_user_config()
+        config.update(options)
+        config[KEY_EFFORT] = self._read_effort()
+        save_user_config(config)
+        self.app.notify("Saved as defaults.")
+
+    def _read_effort(self) -> str | None:
+        """Read the effort Select; blank (no selection) maps to ``None``."""
+        raw = self.query_one("#effort", Select).value
+        if not isinstance(raw, str):
+            return None
+        return raw
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -161,4 +214,11 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         options = {
             opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
         }
-        self.dismiss(NewSessionResult(repo_path=repo_path, prompt=prompt, options=options))
+        self.dismiss(
+            NewSessionResult(
+                repo_path=repo_path,
+                prompt=prompt,
+                options=options,
+                effort=self._read_effort(),
+            )
+        )
