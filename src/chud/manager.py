@@ -58,6 +58,7 @@ class SessionManager:
         options: dict[str, bool] | None = None,
         launch_cwd: Path | None = None,
         effort: str | None = None,
+        issue_number: int | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
         workspace = state_mod.workspaces_root() / sid
@@ -67,6 +68,7 @@ class SessionManager:
             initial_prompt=prompt,
             options=normalize_options(options),
             effort=normalize_effort(effort),
+            issue_number=issue_number,
         )
 
         wt_mgr = WorktreeManager(st)

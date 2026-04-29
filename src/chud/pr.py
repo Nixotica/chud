@@ -178,7 +178,21 @@ def pick_body(state: SessionState) -> str:
     """Prefer the plan's ``## Context`` section as the body lead, with a
     small footer pointing back to the chud session id. Fall back to the
     prompt-only body when no plan is available.
+
+    When the session is linked to a GitHub issue, prepend a ``Closes #N``
+    line so GitHub auto-populates the Development sidebar — this is the
+    signal the new-session picker reads back via
+    ``Issue.closing_pr_numbers`` to filter the issue out of future picker
+    opens. Users can still strip the line in the PR-review modal if they
+    don't want the auto-close behavior.
     """
+    body = _pick_body_inner(state)
+    if state.issue_number is not None:
+        return f"Closes #{state.issue_number}\n\n{body}"
+    return body
+
+
+def _pick_body_inner(state: SessionState) -> str:
     if state.approved_plan:
         context = _extract_plan_context(state.approved_plan)
         if context:

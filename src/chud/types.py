@@ -22,6 +22,7 @@ KEY_ERROR = "error"
 KEY_OPTIONS = "options"
 KEY_APPROVED_PLAN = "approved_plan"
 KEY_EFFORT = "effort"
+KEY_ISSUE_NUMBER = "issue_number"
 
 
 class SessionStatus(StrEnum):
@@ -70,6 +71,10 @@ class SessionState:
     options: dict[str, bool] = field(default_factory=dict)
     approved_plan: str | None = None
     effort: str | None = None
+    # GitHub issue number this session was launched from, if any. Set when
+    # the user picks an issue in the new-session modal; consumed by callers
+    # that want to surface "an existing chud is working on issue #N" hints.
+    issue_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +90,7 @@ class SessionState:
             KEY_OPTIONS: dict(self.options),
             KEY_APPROVED_PLAN: self.approved_plan,
             KEY_EFFORT: self.effort,
+            KEY_ISSUE_NUMBER: self.issue_number,
         }
 
     @classmethod
@@ -107,6 +113,7 @@ class SessionState:
             options=normalize_options(d.get(KEY_OPTIONS)),
             approved_plan=d.get(KEY_APPROVED_PLAN),
             effort=normalize_effort(d.get(KEY_EFFORT)),
+            issue_number=d.get(KEY_ISSUE_NUMBER),
         )
 
 

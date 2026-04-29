@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
-from chud.gh import Issue
+from chud.gh import Issue, build_issue_prompt
 from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
@@ -20,6 +20,12 @@ from chud.state import (
 from chud.types import KEY_EFFORT
 
 _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
+
+# Glyph prefix used in the issue picker to mark issues that already have an
+# active (non-terminal) chud session linked to them. Avoid bracket-wrapped
+# text — Textual's Select renders option labels through Rich markup, so
+# ``[…]`` would be eaten as a tag.
+ACTIVE_CHUD_ICON = "⚙"
 
 
 @dataclass
@@ -40,9 +46,11 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
 
     When chud is launched inside a repo and ``gh`` is available, the caller
     can pass a list of recent open issues into ``issues``; the modal then
-    renders an optional GitHub-issue picker between the prompt and the
-    options group. Selecting an issue tells the caller to fold its title,
-    URL, and body into the agent's initial prompt before kickoff.
+    renders an optional GitHub-issue picker above the prompt. Selecting an
+    issue pre-populates the prompt textarea with the issue's title, URL,
+    body, and a ``---`` separator so the user can append additional context
+    before submitting; the resulting ``NewSessionResult.prompt`` already
+    contains the merged text and the caller passes it to the agent as-is.
     """
 
     DEFAULT_CSS = """
@@ -107,27 +115,64 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         Binding("f2", "start", "Start", priority=True),
     ]
 
-    def __init__(self, issues: list[Issue] | None = None) -> None:
+    # Tell Textual which widget to focus on screen mount, BEFORE the first
+    # paint. Without this, the screen auto-focuses the first focusable
+    # widget in compose order — now the issue Select since it sits above
+    # the prompt — and our ``on_mount`` reassignment to the prompt fires
+    # one frame later, producing a visible flash on the issue picker.
+    AUTO_FOCUS = "#prompt"
+
+    def __init__(
+        self,
+        issues: list[Issue] | None = None,
+        active_sessions_by_issue: dict[int, list[str]] | None = None,
+    ) -> None:
         super().__init__()
         # Normalize ``None`` and ``[]`` to "no picker" via ``bool(self._issues)``;
         # the caller already collapses both gh-missing and empty-list cases to
         # ``None``, but we re-check here so the modal stays robust if invoked
         # directly (e.g. from tests) with an empty list.
         self._issues: list[Issue] = list(issues) if issues else []
+        # Last text we auto-populated into the prompt textarea on issue
+        # selection. Used to detect "user hasn't edited it" so re-selecting a
+        # different issue replaces cleanly without stomping manual edits.
+        self._last_autopopulated: str = ""
+        # {issue_number: [session_id, ...]} for active (non-terminal) chud
+        # sessions already linked to each issue. Used to decorate the picker
+        # labels so the user can see an existing chud is on an issue before
+        # spawning a duplicate. Empty by default — callers that don't pass
+        # this in just get plain labels.
+        self._active_by_issue: dict[int, list[str]] = dict(active_sessions_by_issue or {})
 
     @property
     def _has_issue_picker(self) -> bool:
         return bool(self._issues)
 
+    def _format_issue_label(self, issue: Issue) -> str:
+        """Render the dropdown label for an issue, prefixing a gear icon when
+        an active chud session is already linked to it. The count is appended
+        only when more than one chud is on the same issue.
+
+        Examples:
+          ``#42 — Tighten retries``           (no active session)
+          ``⚙ #42 — Tighten retries``         (one active session)
+          ``⚙×2 #42 — Tighten retries``       (multiple)
+        """
+        base = f"#{issue.number} — {issue.title}"
+        active = self._active_by_issue.get(issue.number, [])
+        if not active:
+            return base
+        if len(active) == 1:
+            return f"{ACTIVE_CHUD_ICON} {base}"
+        return f"{ACTIVE_CHUD_ICON}×{len(active)} {base}"
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("[bold]New session[/bold]")
-            yield Label("Initial prompt:")
-            yield TextArea("", id="prompt")
             if self._has_issue_picker:
                 yield Label("Link GitHub issue (optional):")
                 issue_choices = tuple(
-                    (f"#{i.number} — {i.title}", str(i.number)) for i in self._issues
+                    (self._format_issue_label(i), str(i.number)) for i in self._issues
                 )
                 yield Select(
                     issue_choices,
@@ -135,11 +180,13 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                     allow_blank=True,
                     prompt="(none — start without an issue)",
                     tooltip=(
-                        "Optionally pre-load a GitHub issue's title, URL, and body "
-                        "into the agent's initial prompt. The text you typed above "
-                        "is appended after a `---` separator."
+                        "Pick a GitHub issue to pre-populate the prompt with its "
+                        "title, URL, and body. You can edit the text afterwards "
+                        "to add extra context before submitting."
                     ),
                 )
+            yield Label("Initial prompt:")
+            yield TextArea("", id="prompt")
             defaults = user_default_options()
             with VerticalScroll(id="options-group"):
                 yield Label("Options")
@@ -180,6 +227,41 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         elif event.button.id == "start":
             self._submit()
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Pre-populate the prompt textarea when the user picks an issue.
+
+        Only overwrites when the textarea is empty or still holds the text we
+        last auto-populated (so re-picking a different issue swaps cleanly,
+        but manual edits aren't stomped). When the picker is cleared back to
+        blank, restore the textarea to whatever it held before any
+        auto-population.
+        """
+        if event.select.id != "issue":
+            return
+        prompt_area = self.query_one("#prompt", TextArea)
+        current = prompt_area.text
+        if current and current != self._last_autopopulated:
+            self.app.notify(
+                "Prompt has been edited; not overwriting. Clear it manually to "
+                "load a different issue.",
+                severity="warning",
+            )
+            return
+
+        raw = event.value
+        if not isinstance(raw, str):
+            prompt_area.text = ""
+            self._last_autopopulated = ""
+            return
+        issue = next((i for i in self._issues if str(i.number) == raw), None)
+        if issue is None:
+            return
+        # Pass an empty user_prompt so we get just the issue head + body + "---"
+        # separator; the user types their additions below the separator.
+        merged = build_issue_prompt(issue, "")
+        prompt_area.text = merged
+        self._last_autopopulated = merged
+
     def _save_defaults(self) -> None:
         options = {
             opt.id: self.query_one(f"#opt-{opt.id}", Checkbox).value for opt in SESSION_OPTIONS
@@ -204,9 +286,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
 
     def action_start(self) -> None:
         self._submit()
-
-    def on_mount(self) -> None:
-        self.query_one("#prompt", TextArea).focus()
 
     def _read_issue(self) -> Issue | None:
         """Resolve the ``Select#issue`` value to an ``Issue``, or ``None``.
