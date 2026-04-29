@@ -4,6 +4,7 @@ import contextlib
 import json
 from typing import Any
 
+from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -52,6 +53,42 @@ class _CheckMarkRadio(RadioButton):
     @property
     def _button(self) -> Content:
         return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
+
+
+class _QuestionText(Static):
+    """Question body that toggles between a 1-line ellipsis and full wrap.
+
+    Long question bodies otherwise clip with a trailing ``…`` inside the
+    modal's constrained width with no way to read the rest. ``→`` (handled
+    on the screen via :meth:`QuestionModal.on_key`) expands; ``←`` collapses.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__(classes="question-text")
+        self._text = text
+        self._expanded = False
+        self._render_state()
+
+    def set_expanded(self, value: bool) -> None:
+        if self._expanded == value:
+            return
+        self._expanded = value
+        self._render_state()
+
+    def _render_state(self) -> None:
+        if self._expanded:
+            # Markup path → wraps freely inside the VerticalScroll.
+            self.update(f"{self._text}  [dim](← collapse)[/dim]")
+            self.styles.height = "auto"
+        else:
+            # Force a single ellipsis-truncated line. Static's default markup
+            # path wraps; building a Rich Text with no_wrap+ellipsis is the
+            # simplest reliable way to clip to one line.
+            t = Text(self._text, no_wrap=True, overflow="ellipsis")
+            t.append("  ")
+            t.append("(→ expand)", style="dim")
+            self.update(t)
+            self.styles.height = 1
 
 
 class QuestionModal(ModalScreen[str | None]):
@@ -173,9 +210,8 @@ class QuestionModal(ModalScreen[str | None]):
                     header = str(q.get("header") or "").strip()
                     if header:
                         yield Static(f"[bold]{header}[/bold]", classes="question-header")
-                    yield Static(
+                    yield _QuestionText(
                         str(q.get("question") or "(no question text)"),
-                        classes="question-text",
                     )
                     raw = q.get("_raw")
                     if raw:
@@ -321,12 +357,27 @@ class QuestionModal(ModalScreen[str | None]):
 
         Up/Down moves between checkboxes in the same question; overflowing
         past either end jumps to the adjacent question's response widget.
-        Enter is left to Textual (toggles the focused checkbox / selects the
-        focused radio button); free-text inputs route advance/submit through
-        ``Input.Submitted``.
+        Right/Left expand/collapse all question bodies (so a clipped long
+        question can be read in full). Enter is left to Textual (toggles
+        the focused checkbox / selects the focused radio button); free-text
+        inputs route advance/submit through ``Input.Submitted`` and keep
+        their own left/right cursor handling because we early-return on
+        ``Input``-focused widgets.
         """
         focused = self.focused
         if focused is None or isinstance(focused, Input):
+            return
+
+        if event.key in ("right", "left"):
+            expand = event.key == "right"
+            changed = False
+            for qt in self.query(_QuestionText):
+                if qt._expanded != expand:
+                    qt.set_expanded(expand)
+                    changed = True
+            if changed:
+                event.stop()
+                event.prevent_default()
             return
 
         if event.key in ("up", "down") and isinstance(focused, Checkbox):

@@ -18,6 +18,7 @@ from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal
 from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.question_modal import QuestionModal, _QuestionText
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
@@ -356,6 +357,111 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
         await pilot.press("enter")  # submit empty
         await pilot.pause()
         assert result == [False]
+
+
+_LONG_QUESTION_BODY = (
+    "We are about to refactor the renderer to better support cross-repo session "
+    "orchestration; this will touch the worktree manager, the session state machine, "
+    "the persistence layer, and a handful of widgets in the TUI — before we proceed, "
+    "can you confirm whether you would like the migration to preserve existing "
+    "on-disk session metadata, drop and recreate it on first launch, or attempt a "
+    "best-effort upgrade with a rollback path that keeps the previous JSON files "
+    "under sessions.json.bak so a downgrade is possible without manual cleanup?"
+)
+
+
+def _question_modal_payload() -> dict:
+    """Payload with one overflowing single-line question + one short follow-up."""
+    return {
+        "questions": [
+            {
+                "header": "Long question",
+                "question": _LONG_QUESTION_BODY,
+                "multiSelect": False,
+                "options": [
+                    {"label": "Preserve metadata"},
+                    {"label": "Drop and recreate"},
+                    {"label": "Best-effort upgrade with rollback"},
+                ],
+            },
+            {
+                "header": "Notes",
+                "question": "Anything else the agent should know?",
+                "multiSelect": False,
+            },
+        ]
+    }
+
+
+async def test_question_modal_mounts_and_renders_long_question():
+    """Long question body must render without crashing the strip pipeline."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        _force_render(modal)
+        # Default state is collapsed: every _QuestionText shows the expand hint.
+        bodies = list(modal.query(_QuestionText))
+        assert bodies, "expected at least one _QuestionText to be mounted"
+        for qt in bodies:
+            assert qt._expanded is False
+            assert "→ expand" in str(qt.render())
+
+
+async def test_question_modal_right_arrow_expands_question():
+    """Pressing → on the modal flips every question body into wrapped/expanded."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        await pilot.press("right")
+        await pilot.pause()
+        bodies = list(modal.query(_QuestionText))
+        assert bodies
+        for qt in bodies:
+            assert qt._expanded is True
+            rendered = str(qt.render())
+            assert "← collapse" in rendered
+            # Expanded mode shows the full body (the long body proves we're not
+            # silently still ellipsis-clipping).
+            assert _LONG_QUESTION_BODY[:80] in rendered or qt._text != _LONG_QUESTION_BODY
+        # The long body specifically must be fully present in its widget.
+        long_body_widget = next(qt for qt in bodies if qt._text == _LONG_QUESTION_BODY)
+        assert _LONG_QUESTION_BODY in str(long_body_widget.render())
+        _force_render(modal)
+
+
+async def test_question_modal_left_arrow_collapses_question():
+    """After expanding, ← collapses every question body back to a single line."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("left")
+        await pilot.pause()
+        bodies = list(modal.query(_QuestionText))
+        assert bodies
+        for qt in bodies:
+            assert qt._expanded is False
+            assert "→ expand" in str(qt.render())
+        _force_render(modal)
 
 
 def _cleanup_modal_text(modal: CleanupConfirmationModal) -> str:

@@ -1,0 +1,19 @@
+{
+  "questions": [
+    {
+      "header": "Long question",
+      "question": "We are about to refactor the renderer to better support cross-repo session orchestration; this will touch the worktree manager, the session state machine, the persistence layer, and a handful of widgets in the TUI — before we proceed, can you confirm whether you would like the migration to preserve existing on-disk session metadata, drop and recreate it on first launch, or attempt a best-effort upgrade with a rollback path that keeps the previous JSON files under sessions.json.bak so a downgrade is possible without manual cleanup, and please also indicate whether the rollback artifact should be retained indefinitely or garbage-collected after a successful run?",
+      "multiSelect": false,
+      "options": [
+        {"label": "Preserve metadata"},
+        {"label": "Drop and recreate"},
+        {"label": "Best-effort upgrade with rollback"}
+      ]
+    },
+    {
+      "header": "Notes",
+      "question": "Anything else the agent should know?",
+      "multiSelect": false
+    }
+  ]
+}
