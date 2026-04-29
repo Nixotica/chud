@@ -152,6 +152,27 @@ def test_pick_body_uses_configured_footer_template(monkeypatch):
     assert "*Draft PR opened by chud session" not in body
 
 
+def test_pick_body_prepends_closes_when_issue_linked():
+    """``Closes #N`` lands at the top of the body when the session is linked
+    to a GitHub issue. This tells GitHub to wire up the Development sidebar
+    so the issue is filtered from the new-session picker on subsequent opens.
+    """
+    plan = "# Title\n\n## Context\n\nReasons.\n"
+    s = _state_with_one_repo(approved_plan=plan)
+    s.issue_number = 42
+    body = pr_mod.pick_body(s)
+    assert body.startswith("Closes #42\n\n")
+
+
+def test_pick_body_omits_closes_when_no_issue_linked():
+    """No issue → no ``Closes`` line; body is unchanged from the legacy shape."""
+    plan = "# Title\n\n## Context\n\nReasons.\n"
+    s = _state_with_one_repo(approved_plan=plan)
+    body = pr_mod.pick_body(s)
+    assert not body.startswith("Closes #")
+    assert body.startswith("Reasons.")
+
+
 def test_body_from_prompt_uses_configured_footer_template(monkeypatch):
     monkeypatch.setattr(pr_mod, "render_pr_body_footer", lambda sid: f"FOOTER[{sid}]")
     body = pr_mod._body_from_prompt("xyz", "do the thing")
