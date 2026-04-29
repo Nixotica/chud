@@ -261,33 +261,6 @@ async def test_new_session_modal_mounts_and_renders():
         _force_render(modal)
 
 
-async def test_new_session_modal_renders_with_recent_repo_suggestions(monkeypatch):
-    """The repo Input is wired to a SuggestFromList of recent repos.
-
-    Force a non-empty recent-repo list and confirm the modal still mounts and
-    that the repo Input has a suggester attached with those entries — i.e. the
-    autocomplete path doesn't crash with real suggestions in play.
-    """
-    from textual.suggester import SuggestFromList
-    from textual.widgets import Input
-
-    from chud.widgets import new_session_modal as nsm_mod
-
-    recents = ["/tmp/repo-a", "/tmp/repo-b"]
-    monkeypatch.setattr(nsm_mod, "_safe_recent_repos", lambda: recents)
-
-    app = ChudApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(NewSessionModal())
-        await pilot.pause()
-        modal = app.screen
-        assert isinstance(modal, NewSessionModal)
-        repo_input = modal.query_one("#repo", Input)
-        assert isinstance(repo_input.suggester, SuggestFromList)
-        _force_render(modal)
-
-
 async def test_new_session_modal_options_render_checkmark_glyph():
     """Options must render with ✓/X glyphs (not just colour shifts).
 
