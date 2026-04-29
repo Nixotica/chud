@@ -10,14 +10,50 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Input, RadioSet, Static
+from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
 
-from chud.widgets.check_mark_toggles import CheckMarkBox, CheckMarkRadio
+
+def _toggle_button_with_off_glyph(self: Checkbox | RadioButton, inner_off: str) -> Content:
+    """Render the toggle button cell, swapping glyph by ``self.value``.
+
+    Textual 8.x's default ``ToggleButton._button`` renders ``BUTTON_INNER``
+    in both states and only flips its colour. We want a different character
+    per state — ✓ when on, ``inner_off`` when off — so we recreate the
+    assembly with a value-dependent inner.
+    """
+    button_style = self.get_visual_style("toggle--button")
+    side_style = Style(
+        foreground=button_style.background,
+        background=self.background_colors[1],
+    )
+    inner = self.BUTTON_INNER if self.value else inner_off
+    return Content.assemble(
+        (self.BUTTON_LEFT, side_style),
+        (inner, button_style),
+        (self.BUTTON_RIGHT, side_style),
+    )
+
+
+class _CheckMarkBox(Checkbox):
+    BUTTON_INNER = "✓"
+    BUTTON_INNER_OFF = "X"
+
+    @property
+    def _button(self) -> Content:
+        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
+
+
+class _CheckMarkRadio(RadioButton):
+    BUTTON_INNER = "✓"
+    BUTTON_INNER_OFF = "●"
+
+    @property
+    def _button(self) -> Content:
+        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
 class QuestionModal(ModalScreen[str | None]):
-    """Render an AskUserQuestion tool call and collect the user's answer.
-    """
+    """Render an AskUserQuestion tool call and collect the user's answer."""
 
     DEFAULT_CSS = """
     QuestionModal {
@@ -307,17 +343,13 @@ class QuestionModal(ModalScreen[str | None]):
             if event.key == "down":
                 if opt_idx + 1 < count:
                     with contextlib.suppress(Exception):
-                        self.query_one(
-                            f"#q{q_idx}-opt{opt_idx + 1}", Checkbox
-                        ).focus()
+                        self.query_one(f"#q{q_idx}-opt{opt_idx + 1}", Checkbox).focus()
                 else:
                     self._advance_from(q_idx)
             else:
                 if opt_idx - 1 >= 0:
                     with contextlib.suppress(Exception):
-                        self.query_one(
-                            f"#q{q_idx}-opt{opt_idx - 1}", Checkbox
-                        ).focus()
+                        self.query_one(f"#q{q_idx}-opt{opt_idx - 1}", Checkbox).focus()
                 else:
                     self._retreat_to(q_idx)
 

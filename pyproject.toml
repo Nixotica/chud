@@ -1,26 +1,27 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "chud"
-version = "0.0.1"
+dynamic = ["version"]
 description = "TUI for orchestrating multiple Claude Code agents in parallel."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.12.13"
 authors = [{ name = "Nixotica" }]
 license = { text = "MIT" }
 dependencies = [
-  "claude-agent-sdk>=0.1.0",
-  "textual>=8.2.4",
-  "platformdirs>=4.0",
+  "claude-agent-sdk==0.1.69",
+  "textual==8.2.4",
+  "platformdirs==4.9.6",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=9.0.3",
-  "pytest-asyncio>=1.3.0",
-  "ruff>=0.5",
+  "pytest==9.0.3",
+  "pytest-asyncio==1.3.0",
+  "ruff==0.15.12",
+  "pyright==1.1.409",
 ]
 
 [project.scripts]
@@ -29,15 +30,32 @@ chud = "chud.app:main"
 [project.urls]
 Repository = "https://github.com/Nixotica/chud"
 
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^v(?P<version>.+)$"
+
+[tool.hatch.build.hooks.vcs]
+# Writes the resolved version into the package at build time so importlib.metadata
+# and __version__ both report the same string.
+version-file = "src/chud/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/chud"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

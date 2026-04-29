@@ -105,6 +105,7 @@ async def test_stop_is_safe_with_no_pending_decision():
 async def test_stop_swallows_interrupt_errors():
     """If the subprocess is already gone, interrupt() may raise — stop() must
     still proceed to disconnect and clear state."""
+
     class BrokenInterruptClient(FakeClient):
         async def interrupt(self) -> None:
             self.calls.append("interrupt")

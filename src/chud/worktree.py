@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from chud.settings import get_branch_prefix, get_include_slug
 from chud.types import SessionState, Worktree
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,20 @@ def repo_toplevel(path: Path) -> Path:
     return Path(result.stdout.strip())
 
 
+def detect_cwd_repo() -> Path | None:
+    """Toplevel of the git repo containing the current working directory.
+
+    Returns ``None`` if CWD is not inside a git repo, if git isn't on PATH,
+    or if CWD itself isn't a real directory anymore. Used by the new-session
+    flow to auto-attach the obvious repo without making the user type its
+    path.
+    """
+    try:
+        return repo_toplevel(Path.cwd())
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+
+
 class WorktreeManager:
     """Per-session manager for the workspace dir and N attached worktrees."""
 
@@ -94,8 +109,12 @@ class WorktreeManager:
             i += 1
 
         worktree_path = self.session.workspace_dir / wt_dir_name
-        slug = _slugify(self.session.initial_prompt) or "session"
-        branch = f"chud/{slug}-{self.session.id}"
+        prefix = get_branch_prefix()
+        if get_include_slug():
+            slug = _slugify(self.session.initial_prompt) or "session"
+            branch = f"{prefix}{slug}-{self.session.id}"
+        else:
+            branch = f"{prefix}{self.session.id}"
 
         branch_exists = (
             subprocess.run(
@@ -123,9 +142,7 @@ class WorktreeManager:
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise WorktreeError(
-                f"git worktree add failed for {toplevel}: {result.stderr.strip()}"
-            )
+            raise WorktreeError(f"git worktree add failed for {toplevel}: {result.stderr.strip()}")
 
         wt = Worktree(repo_path=toplevel, worktree_path=worktree_path, branch=branch)
         self.session.attached_repos[repo_key] = wt
@@ -142,8 +159,7 @@ class WorktreeManager:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 and not force:
             raise WorktreeError(
-                f"git worktree remove failed: {result.stderr.strip()} "
-                f"(pass force=True to discard)"
+                f"git worktree remove failed: {result.stderr.strip()} (pass force=True to discard)"
             )
 
         del self.session.attached_repos[repo_key]
@@ -175,9 +191,7 @@ class WorktreeManager:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "not found" not in stderr.lower():
-                log.warning(
-                    "git branch -D %s failed in %s: %s", branch, repo_path, stderr
-                )
+                log.warning("git branch -D %s failed in %s: %s", branch, repo_path, stderr)
 
     def cleanup_workspace(self) -> None:
         """Remove all attached worktrees and the workspace dir. Destructive."""
