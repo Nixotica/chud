@@ -18,7 +18,6 @@ from chud import state as state_mod
 from chud.gh import Issue
 from chud.manager import SessionManager
 from chud.types import Event, EventKind, SessionStatus
-from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
@@ -58,7 +57,6 @@ class ChudApp(App[None]):
 
     BINDINGS = [
         ("n", "new_session", "New session"),
-        ("a", "attach_repo", "Attach repo"),
         ("k", "kill_session", "Kill session"),
         ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
@@ -89,7 +87,7 @@ class ChudApp(App[None]):
         self._prompt_queue: list[PromptRequest] = []
         self._prompt_active: PromptRequest | None = None
         # Number of user-initiated modals currently on screen (NewSession,
-        # AttachRepo). While > 0, session-driven prompts stay queued so they
+        # Settings). While > 0, session-driven prompts stay queued so they
         # can't pop over a modal the user is actively typing into.
         self._user_modal_depth: int = 0
 
@@ -182,27 +180,6 @@ class ChudApp(App[None]):
             return
         self.query_one(SessionListView).add_session(sess.state)
         self._select_session(sess.state.id)
-
-    def action_attach_repo(self) -> None:
-        self.run_worker(self._attach_repo_flow(), exclusive=False)
-
-    async def _attach_repo_flow(self) -> None:
-        sid = self._selected_session_id
-        if sid is None:
-            self.notify("No session selected.", severity="warning")
-            return
-        self._user_modal_depth += 1
-        try:
-            repo: Path | None = await self.push_screen_wait(AttachRepoModal())
-        finally:
-            self._user_modal_depth -= 1
-            self._maybe_show_next_prompt()
-        if repo is None:
-            return
-        try:
-            await self.manager.attach_repo(sid, repo)
-        except Exception as e:
-            self.notify(f"attach_repo failed: {e}", severity="error")
 
     def action_settings(self) -> None:
         self.run_worker(self._settings_flow(), exclusive=False)
@@ -419,7 +396,7 @@ class ChudApp(App[None]):
         if self._prompt_active is not None:
             return
         if self._user_modal_depth > 0:
-            # A user-initiated modal (NewSession/AttachRepo) is on screen;
+            # A user-initiated modal (NewSession/Settings) is on screen;
             # don't pop a session-driven prompt over it. The flow that closes
             # the user modal calls back into us once it's gone.
             return

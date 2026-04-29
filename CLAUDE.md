@@ -30,7 +30,7 @@ The PR workflow (`.github/workflows/tests.yml`) runs `pytest`, `ruff check .`, `
 
 All source lives under `src/chud/`. The module split is deliberate — keep concerns where they are:
 
-- `app.py` — `ChudApp`, the Textual app. Top-level layout, key bindings, modal orchestration. Bindings: `n` new session, `a` attach repo, `k` kill session, `q` quit. `main()` configures logging and runs the app.
+- `app.py` — `ChudApp`, the Textual app. Top-level layout, key bindings, modal orchestration. Bindings: `n` new session, `k` kill session, `q` quit. `main()` configures logging and runs the app.
 - `manager.py` — `SessionManager`. Owns all `AgentSession` instances, fans events from sessions to UI subscribers via async queues, triggers desktop notifications when the app is unfocused, and persists session state.
 - `session.py` — `AgentSession`. Wraps one `ClaudeSDKClient` and runs the per-session state machine. Intercepts the `ExitPlanMode` tool call to gate plan approval; uses `Stop` and `Notification` SDK hooks to detect idle and user-input requests.
 - `state.py` — JSON persistence. Resolves data dirs via `platformdirs.user_data_dir("chud")`. Atomic writes (temp file + rename).
@@ -42,7 +42,6 @@ All source lives under `src/chud/`. The module split is deliberate — keep conc
   - `session_view.py` — right pane: header, transcript, input box. `render_event()` dispatches by `EventKind`.
   - `plan_modal.py` — modal showing the proposed plan markdown; `a` approve, `r`/`escape` reject.
   - `new_session_modal.py` — repo path (optional) + initial prompt (required).
-  - `attach_repo_modal.py` — attach an additional repo to an existing session.
 
 ### Session state machine
 
