@@ -13,7 +13,9 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Input, ListView
 
+from chud import gh as gh_mod
 from chud import state as state_mod
+from chud.gh import Issue
 from chud.manager import SessionManager
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.attach_repo_modal import AttachRepoModal
@@ -125,20 +127,50 @@ class ChudApp(App[None]):
     def action_new_session(self) -> None:
         self.run_worker(self._new_session_flow(), exclusive=False)
 
+    async def _fetch_issues_for_modal(self, repo_path: Path) -> list[Issue] | None:
+        """Best-effort issue list for the new-session picker; ``None`` to hide.
+
+        Returns ``None`` when ``gh`` isn't installed *or* when the call
+        succeeded but the repo has no open issues — both collapse to the
+        same hide-the-picker branch in the modal. ``gh.list_issues`` already
+        swallows network/auth/JSON failures internally.
+        """
+        if not gh_mod.is_available():
+            return None
+        try:
+            issues = await gh_mod.list_issues(repo_path)
+        except Exception:
+            log.exception("gh.list_issues raised in %s", repo_path)
+            return None
+        return issues or None
+
     async def _new_session_flow(self) -> None:
+        # Detect the cwd repo and pre-fetch issues *before* showing the modal
+        # so the picker can render immediately. The fetch has its own 5s
+        # timeout in gh.list_issues, so a slow network never delays the modal
+        # by more than that.
+        detected = detect_cwd_repo()
+        issues = await self._fetch_issues_for_modal(detected) if detected is not None else None
+
         self._user_modal_depth += 1
         try:
-            result: NewSessionResult | None = await self.push_screen_wait(NewSessionModal())
+            result: NewSessionResult | None = await self.push_screen_wait(
+                NewSessionModal(issues=issues)
+            )
         finally:
             self._user_modal_depth -= 1
             self._maybe_show_next_prompt()
         if result is None:
             return
-        detected = detect_cwd_repo()
+        if result.issue is not None:
+            log.info("new session linked to issue #%d", result.issue.number)
+            final_prompt = gh_mod.build_issue_prompt(result.issue, result.prompt)
+        else:
+            final_prompt = result.prompt
         launch = None if detected is not None else Path.cwd()
         try:
             sess = await self.manager.create_session(
-                prompt=result.prompt,
+                prompt=final_prompt,
                 repo_path=detected,
                 launch_cwd=launch,
                 options=result.options,

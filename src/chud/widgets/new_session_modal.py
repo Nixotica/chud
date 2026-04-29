@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
+from chud.gh import Issue
 from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
@@ -26,6 +27,7 @@ class NewSessionResult:
     prompt: str
     options: dict[str, bool] = field(default_factory=user_default_options)
     effort: str | None = None
+    issue: Issue | None = None
 
 
 class NewSessionModal(ModalScreen[NewSessionResult | None]):
@@ -35,6 +37,12 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     (see ``chud.worktree.detect_cwd_repo``); when chud isn't inside a git
     repo, the session starts unattached and the agent uses the
     ``mcp__chud__attach_repo`` tool to attach repos itself.
+
+    When chud is launched inside a repo and ``gh`` is available, the caller
+    can pass a list of recent open issues into ``issues``; the modal then
+    renders an optional GitHub-issue picker between the prompt and the
+    options group. Selecting an issue tells the caller to fold its title,
+    URL, and body into the agent's initial prompt before kickoff.
     """
 
     DEFAULT_CSS = """
@@ -44,7 +52,8 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     NewSessionModal > Vertical {
         width: 90%;
         max-width: 100;
-        height: 36;
+        height: auto;
+        max-height: 90%;
         background: $surface;
         border: round $accent;
         padding: 1 2;
@@ -55,6 +64,9 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     }
     NewSessionModal TextArea {
         height: 8;
+        margin-bottom: 1;
+    }
+    NewSessionModal #issue {
         margin-bottom: 1;
     }
     NewSessionModal #options-group {
@@ -95,11 +107,39 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         Binding("f2", "start", "Start", priority=True),
     ]
 
+    def __init__(self, issues: list[Issue] | None = None) -> None:
+        super().__init__()
+        # Normalize ``None`` and ``[]`` to "no picker" via ``bool(self._issues)``;
+        # the caller already collapses both gh-missing and empty-list cases to
+        # ``None``, but we re-check here so the modal stays robust if invoked
+        # directly (e.g. from tests) with an empty list.
+        self._issues: list[Issue] = list(issues) if issues else []
+
+    @property
+    def _has_issue_picker(self) -> bool:
+        return bool(self._issues)
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("[bold]New session[/bold]")
             yield Label("Initial prompt:")
             yield TextArea("", id="prompt")
+            if self._has_issue_picker:
+                yield Label("Link GitHub issue (optional):")
+                issue_choices = tuple(
+                    (f"#{i.number} — {i.title}", str(i.number)) for i in self._issues
+                )
+                yield Select(
+                    issue_choices,
+                    id="issue",
+                    allow_blank=True,
+                    prompt="(none — start without an issue)",
+                    tooltip=(
+                        "Optionally pre-load a GitHub issue's title, URL, and body "
+                        "into the agent's initial prompt. The text you typed above "
+                        "is appended after a `---` separator."
+                    ),
+                )
             defaults = user_default_options()
             with VerticalScroll(id="options-group"):
                 yield Label("Options")
@@ -168,6 +208,21 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     def on_mount(self) -> None:
         self.query_one("#prompt", TextArea).focus()
 
+    def _read_issue(self) -> Issue | None:
+        """Resolve the ``Select#issue`` value to an ``Issue``, or ``None``.
+
+        ``Select.value`` returns the ``BLANK`` sentinel (not a ``str``) when
+        the user hasn't picked anything, which collapses to ``None`` here.
+        Otherwise we look up the matching issue by number — comparing as
+        strings since ``Select`` round-trips option values verbatim.
+        """
+        if not self._has_issue_picker:
+            return None
+        raw = self.query_one("#issue", Select).value
+        if not isinstance(raw, str):
+            return None
+        return next((i for i in self._issues if str(i.number) == raw), None)
+
     def _submit(self) -> None:
         prompt = self.query_one("#prompt", TextArea).text.strip()
         if not prompt:
@@ -180,5 +235,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                 prompt=prompt,
                 options=options,
                 effort=self._read_effort(),
+                issue=self._read_issue(),
             )
         )

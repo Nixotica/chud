@@ -11,12 +11,18 @@ widget for its strips so the render pipeline runs end-to-end.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+from textual.widgets import Select
+
+from chud import gh as gh_mod
 from chud.app import ChudApp
+from chud.gh import Issue
 from chud.types import Event, EventKind, SessionState, SessionStatus, Worktree
 from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
-from chud.widgets.new_session_modal import NewSessionModal
+from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
@@ -418,3 +424,247 @@ async def test_cleanup_modal_published_swaps_to_success_copy():
         assert "https://github.com/a/b/pull/2" in text
         assert "permanently delete" not in text
         assert "will be lost" not in text
+
+
+# --- New-session modal: GitHub issue picker ----------------------------------
+
+
+def _sample_issue(number: int = 7, title: str = "t") -> Issue:
+    return Issue(
+        number=number,
+        title=title,
+        url=f"https://github.com/x/y/issues/{number}",
+        body="ctx body",
+        state="OPEN",
+    )
+
+
+async def test_new_session_modal_with_issues_renders_picker():
+    """Picker Select is mounted and rendered when issues are provided."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal(issues=[_sample_issue()]))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        # Query the modal screen specifically — the picker lives there, not on
+        # the app's default screen.
+        select = modal.query_one("#issue", Select)
+        assert select is not None
+        _force_render(modal)
+
+
+async def test_new_session_modal_without_issues_hides_picker():
+    """``issues=None`` ⇒ no Select#issue in the DOM."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal(issues=None))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        assert len(modal.query("#issue")) == 0
+        _force_render(modal)
+
+
+async def test_new_session_modal_with_empty_issues_hides_picker():
+    """``issues=[]`` is treated identically to ``None``."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal(issues=[]))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        assert len(modal.query("#issue")) == 0
+        _force_render(modal)
+
+
+# --- New-session flow: issue → templated prompt ------------------------------
+
+
+async def test_new_session_flow_injects_issue_into_prompt(monkeypatch):
+    """End-to-end: picking an issue templates it into the create_session prompt."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Pretend we're inside a repo and gh is happy.
+        monkeypatch.setattr("chud.app.detect_cwd_repo", lambda: Path("/fake/repo"))
+        monkeypatch.setattr(gh_mod, "is_available", lambda: True)
+        issue = _sample_issue(number=7, title="Tighten retries")
+
+        async def fake_list_issues(_repo, **_kw):
+            return [issue]
+
+        monkeypatch.setattr(gh_mod, "list_issues", fake_list_issues)
+
+        # Capture the prompt that would reach the agent runtime.
+        captured: dict[str, Any] = {}
+
+        async def fake_create_session(
+            prompt: str,
+            repo_path: Path | None = None,
+            launch_cwd: Path | None = None,
+            options: dict[str, bool] | None = None,
+            effort: str | None = None,
+            **_kw: Any,
+        ) -> Any:
+            captured["prompt"] = prompt
+            captured["repo_path"] = repo_path
+            state = SessionState(
+                id="sessISSUE",
+                workspace_dir=Path("/tmp/ws"),
+                initial_prompt=prompt,
+            )
+            return SimpleNamespace(state=state)
+
+        monkeypatch.setattr(app.manager, "create_session", fake_create_session)
+
+        # Replace push_screen_wait with a stub that returns a synthetic result
+        # carrying the picked issue. This avoids having to drive the modal via
+        # keystrokes — we're testing the flow's plumbing, not Textual's input.
+        async def fake_push_screen_wait(modal: Any) -> NewSessionResult:
+            assert isinstance(modal, NewSessionModal)
+            # The picker should have been mounted with our issue.
+            assert modal._has_issue_picker
+            return NewSessionResult(
+                prompt="please fix it",
+                options={},
+                effort=None,
+                issue=issue,
+            )
+
+        monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait)
+
+        await app._new_session_flow()
+
+        prompt = captured["prompt"]
+        assert "GitHub issue #7: Tighten retries" in prompt
+        assert "https://github.com/x/y/issues/7" in prompt
+        assert "ctx body" in prompt
+        assert "\n---\n" in prompt
+        assert prompt.rstrip().endswith("please fix it")
+        # And the repo flowed through to the manager.
+        assert captured["repo_path"] == Path("/fake/repo")
+
+
+async def test_new_session_flow_no_issue_passes_prompt_verbatim(monkeypatch):
+    """If the user doesn't pick an issue, the prompt reaches create_session unchanged."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        monkeypatch.setattr("chud.app.detect_cwd_repo", lambda: Path("/fake/repo"))
+        monkeypatch.setattr(gh_mod, "is_available", lambda: True)
+
+        async def fake_list_issues(_repo, **_kw):
+            return [_sample_issue()]
+
+        monkeypatch.setattr(gh_mod, "list_issues", fake_list_issues)
+
+        captured: dict[str, Any] = {}
+
+        async def fake_create_session(
+            prompt: str,
+            repo_path: Path | None = None,
+            launch_cwd: Path | None = None,
+            options: dict[str, bool] | None = None,
+            effort: str | None = None,
+            **_kw: Any,
+        ) -> Any:
+            captured["prompt"] = prompt
+            return SimpleNamespace(
+                state=SessionState(
+                    id="sessNO",
+                    workspace_dir=Path("/tmp/ws"),
+                    initial_prompt=prompt,
+                )
+            )
+
+        monkeypatch.setattr(app.manager, "create_session", fake_create_session)
+
+        async def fake_push_screen_wait(_modal: Any) -> NewSessionResult:
+            return NewSessionResult(
+                prompt="just do the thing",
+                options={},
+                effort=None,
+                issue=None,
+            )
+
+        monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait)
+
+        await app._new_session_flow()
+
+        assert captured["prompt"] == "just do the thing"
+
+
+async def test_new_session_flow_no_repo_skips_gh(monkeypatch):
+    """When CWD isn't a repo, ``list_issues`` is never called and modal gets ``None``."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        monkeypatch.setattr("chud.app.detect_cwd_repo", lambda: None)
+
+        list_calls: list[Path] = []
+
+        async def fake_list_issues(repo, **_kw):
+            list_calls.append(repo)
+            return []
+
+        monkeypatch.setattr(gh_mod, "list_issues", fake_list_issues)
+        # Don't even let is_available short-circuit hide the call — the
+        # detect-cwd-repo branch should bail before reaching this.
+        monkeypatch.setattr(gh_mod, "is_available", lambda: True)
+
+        modals_seen: list[NewSessionModal] = []
+
+        async def fake_push_screen_wait(modal: Any) -> NewSessionResult | None:
+            assert isinstance(modal, NewSessionModal)
+            modals_seen.append(modal)
+            # Cancel the flow so we don't have to stub create_session.
+            return None
+
+        monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait)
+
+        await app._new_session_flow()
+
+        assert list_calls == []
+        assert len(modals_seen) == 1
+        # The modal received no issues ⇒ picker hidden.
+        assert not modals_seen[0]._has_issue_picker
+
+
+async def test_new_session_flow_gh_unavailable_skips_list(monkeypatch):
+    """Repo detected but ``gh`` missing ⇒ list_issues not called, picker hidden."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        monkeypatch.setattr("chud.app.detect_cwd_repo", lambda: Path("/fake/repo"))
+        monkeypatch.setattr(gh_mod, "is_available", lambda: False)
+
+        list_calls: list[Path] = []
+
+        async def fake_list_issues(repo, **_kw):
+            list_calls.append(repo)
+            return []
+
+        monkeypatch.setattr(gh_mod, "list_issues", fake_list_issues)
+
+        modals_seen: list[NewSessionModal] = []
+
+        async def fake_push_screen_wait(modal: Any) -> NewSessionResult | None:
+            assert isinstance(modal, NewSessionModal)
+            modals_seen.append(modal)
+            return None
+
+        monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait)
+
+        await app._new_session_flow()
+
+        assert list_calls == []
+        assert len(modals_seen) == 1
+        assert not modals_seen[0]._has_issue_picker
