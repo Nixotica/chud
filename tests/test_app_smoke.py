@@ -20,7 +20,6 @@ from chud import gh as gh_mod
 from chud.app import ChudApp
 from chud.gh import Issue
 from chud.types import Event, EventKind, SessionState, SessionStatus, Worktree
-from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import (
     ACTIVE_CHUD_ICON,
@@ -257,15 +256,6 @@ async def test_new_session_modal_mounts_and_renders():
         modal = app.screen
         assert isinstance(modal, NewSessionModal)
         _force_render(modal)
-
-
-async def test_attach_repo_modal_mounts_and_renders():
-    app = ChudApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(AttachRepoModal())
-        await pilot.pause()
-        _force_render(app.screen)
 
 
 async def test_plan_modal_mounts_and_renders_long_plan():
