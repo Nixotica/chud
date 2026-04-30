@@ -54,7 +54,7 @@ class ChudApp(App[None]):
     """Multi-agent Claude Code TUI."""
 
     TITLE = "chud"
-    SUB_TITLE = "multi-agent Claude Code orchestrator"
+    SUB_TITLE = "multi-agent Claude HUD"
 
     BINDINGS = [
         ("n", "new_session", "New session"),
