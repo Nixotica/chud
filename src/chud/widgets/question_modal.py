@@ -9,6 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.geometry import Size
 from textual.screen import ModalScreen
 from textual.style import Style
 from textual.widget import Widget
@@ -36,18 +37,142 @@ def _toggle_button_with_off_glyph(self: Checkbox | RadioButton, inner_off: str) 
     )
 
 
-class _CheckMarkBox(Checkbox):
+# Heuristic: an option is "long enough that the user might want to expand it"
+# when its rendered single-line form exceeds this many columns. Picked to
+# roughly match the modal's content width minus the toggle glyph and padding.
+_LONG_OPTION_THRESHOLD = 60
+
+
+class _ExpandableOption:
+    """Mixin for ``Checkbox``/``RadioButton`` that allows multi-line expansion.
+
+    The base ``ToggleButton`` strips labels to a single line in
+    ``_make_label`` and hard-codes ``get_content_height`` to ``1``. We
+    override both so that, when ``set_expanded(True)`` is called, the
+    widget's label can carry an embedded description across multiple lines.
+    """
+
+    _option_label: str
+    _option_description: str
+    _expanded: bool
+
+    def _init_option(self, label_text: str, description: str) -> None:
+        self._option_label = label_text
+        self._option_description = (description or "").strip()
+        self._expanded = False
+
+    @property
+    def is_long(self) -> bool:
+        base = self._option_label
+        if self._option_description:
+            base = f"{base} — {self._option_description}"
+        return len(base) > _LONG_OPTION_THRESHOLD
+
+    def _compute_label(self) -> Content:
+        dim = Style(dim=True)
+        if self._expanded:
+            text = Content(self._option_label)
+            if self._option_description:
+                text = text.append("\n").append_text(self._option_description, dim)
+            text = text.append("  ").append_text("(← collapse)", dim)
+            return text
+        # Collapsed: build a single-line content. If the option is long
+        # enough that its base text won't fit at the current width, truncate
+        # ourselves and append ``… (→)`` so the expand affordance is visible.
+        base = self._option_label
+        if self._option_description:
+            base = f"{base} — {self._option_description}"
+        if not self.is_long:
+            return Content(base)
+        # ToggleButton.render prepends a 3-cell button glyph + 1-cell spacer.
+        button_width = 4
+        # Fallback width for the moment between __init__ and the first
+        # ``on_resize``; gets corrected once layout settles. ``self.size`` is
+        # only available after the Widget base init runs, so guard the read.
+        try:
+            current_width: int = self.size.width  # type: ignore[attr-defined]
+        except (RuntimeError, AttributeError):
+            current_width = 0
+        width = current_width if current_width > 0 else 80
+        available = max(10, width - button_width)
+        hint_truncated = "… (→)"
+        hint_full = "  (→)"
+        if len(base) + len(hint_full) <= available:
+            return Content(base).append("  ").append_text("(→)", dim)
+        cut = max(1, available - len(hint_truncated))
+        return Content(base[:cut].rstrip()).append_text(hint_truncated, dim)
+
+    # --- ToggleButton overrides --------------------------------------------
+
+    def _make_label(self, label: Any) -> Content:  # type: ignore[override]
+        # Parent strips to ``first_line.rstrip()``; we need to keep newlines
+        # so the expanded view can render across multiple rows.
+        if isinstance(label, Content):
+            return label
+        return Content.from_text(label)
+
+    def get_content_height(  # type: ignore[override]
+        self, container: Size, viewport: Size, width: int
+    ) -> int:
+        if not self._expanded:
+            return 1
+        # Account for the 3-cell button glyph + 1-cell spacer that
+        # ``ToggleButton.render`` prepends to the label.
+        button_width = 3 + 1
+        available = max(1, width - button_width)
+        plain: str = self.label.plain  # type: ignore[attr-defined]
+        total = 0
+        for line in plain.split("\n"):
+            total += max(1, -(-max(1, len(line)) // available))
+        return max(1, total)
+
+    def set_expanded(self, value: bool) -> None:
+        if self._expanded == value:
+            return
+        self._expanded = value
+        # ToggleButton's label setter calls ``self._make_label`` (overridden
+        # above) and triggers a layout-changing refresh.
+        self.label = self._compute_label()  # type: ignore[attr-defined]
+
+    def _refresh_collapsed_label(self) -> None:
+        """Recompute the collapsed label against the current widget width.
+
+        The collapsed form truncates to fit the visible row; we don't know
+        the row's width until after layout, so we recompute on mount and on
+        each resize. Expanded labels don't need this — they wrap freely.
+        """
+        if self._expanded:
+            return
+        self.label = self._compute_label()  # type: ignore[attr-defined]
+
+    def on_mount(self) -> None:
+        self._refresh_collapsed_label()
+
+    def on_resize(self, event: events.Resize) -> None:
+        del event
+        self._refresh_collapsed_label()
+
+
+class _CheckMarkBox(_ExpandableOption, Checkbox):
     BUTTON_INNER = "✓"
     BUTTON_INNER_OFF = "X"
+
+    def __init__(self, label_text: str, description: str = "", **kwargs: Any) -> None:
+        self._init_option(label_text, description)
+        super().__init__(self._compute_label(), **kwargs)
 
     @property
     def _button(self) -> Content:
         return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
-class _CheckMarkRadio(RadioButton):
+class _CheckMarkRadio(_ExpandableOption, RadioButton):
     BUTTON_INNER = "✓"
     BUTTON_INNER_OFF = "●"
+
+    def __init__(self, label_text: str, description: str = "", **kwargs: Any) -> None:
+        self._init_option(label_text, description)
+        super().__init__(self._compute_label(), **kwargs)
 
     @property
     def _button(self) -> Content:
@@ -84,6 +209,7 @@ class QuestionModal(ModalScreen[str | None]):
     }
     QuestionModal .question-text {
         margin-bottom: 1;
+        height: auto;
     }
     QuestionModal #other-input {
         height: 3;
@@ -94,11 +220,14 @@ class QuestionModal(ModalScreen[str | None]):
         margin-bottom: 1;
     }
     QuestionModal Checkbox {
-        height: 1;
+        height: auto;
+        min-height: 1;
         margin: 0;
         padding: 0;
         border: none;
         background: transparent;
+        text-wrap: wrap;
+        text-overflow: clip;
     }
     QuestionModal Checkbox:focus {
         border: none;
@@ -116,11 +245,14 @@ class QuestionModal(ModalScreen[str | None]):
         background: $boost;
     }
     QuestionModal RadioButton {
-        height: 1;
+        height: auto;
+        min-height: 1;
         margin: 0;
         padding: 0;
         border: none;
         background: transparent;
+        text-wrap: wrap;
+        text-overflow: clip;
     }
     QuestionModal RadioButton:focus {
         background: $boost;
@@ -173,9 +305,11 @@ class QuestionModal(ModalScreen[str | None]):
                     header = str(q.get("header") or "").strip()
                     if header:
                         yield Static(f"[bold]{header}[/bold]", classes="question-header")
+                    # Question body wraps naturally; no expand/collapse.
                     yield Static(
                         str(q.get("question") or "(no question text)"),
                         classes="question-text",
+                        markup=False,
                     )
                     raw = q.get("_raw")
                     if raw:
@@ -191,13 +325,13 @@ class QuestionModal(ModalScreen[str | None]):
                         continue
                     if multi:
                         for opt_idx, opt in enumerate(options):
-                            label = _format_option(opt)
-                            yield _CheckMarkBox(label, id=f"q{idx}-opt{opt_idx}")
+                            label, desc = _split_option(opt)
+                            yield _CheckMarkBox(label, desc, id=f"q{idx}-opt{opt_idx}")
                     else:
                         with RadioSet(id=f"q{idx}-radio"):
                             for opt_idx, opt in enumerate(options):
-                                label = _format_option(opt)
-                                yield _CheckMarkRadio(label, id=f"q{idx}-opt{opt_idx}")
+                                label, desc = _split_option(opt)
+                                yield _CheckMarkRadio(label, desc, id=f"q{idx}-opt{opt_idx}")
             yield Input(
                 placeholder="Other / free-text answer (optional)…",
                 id="other-input",
@@ -316,17 +450,47 @@ class QuestionModal(ModalScreen[str | None]):
             except Exception:
                 continue
 
-    def on_key(self, event: events.Key) -> None:
-        """Keyboard nav inside multi-select Checkbox groups.
+    def _focused_option(self) -> _CheckMarkBox | _CheckMarkRadio | None:
+        """The expandable option currently under focus, if any.
 
-        Up/Down moves between checkboxes in the same question; overflowing
-        past either end jumps to the adjacent question's response widget.
-        Enter is left to Textual (toggles the focused checkbox / selects the
-        focused radio button); free-text inputs route advance/submit through
-        ``Input.Submitted``.
+        For multi-select Checkboxes the focused widget *is* the option. For
+        single-select RadioSets the RadioSet itself is focused, so we resolve
+        the highlighted child via :pyattr:`RadioSet._selected`.
+        """
+        focused = self.focused
+        if isinstance(focused, _CheckMarkBox):
+            return focused
+        if isinstance(focused, RadioSet):
+            idx = getattr(focused, "_selected", None)
+            if not isinstance(idx, int) or idx < 0:
+                return None
+            radios = [c for c in focused.children if isinstance(c, _CheckMarkRadio)]
+            if 0 <= idx < len(radios):
+                return radios[idx]
+        return None
+
+    def on_key(self, event: events.Key) -> None:
+        """Keyboard nav.
+
+        Right/left expand/collapse the *focused* option (or the highlighted
+        radio inside a focused RadioSet). Up/down moves between Checkboxes
+        in the same multi-select question, falling through to adjacent
+        questions at the boundaries. Inputs keep their own cursor handling
+        because we early-return on ``Input``-focused widgets.
         """
         focused = self.focused
         if focused is None or isinstance(focused, Input):
+            return
+
+        if event.key in ("right", "left"):
+            target = self._focused_option()
+            if target is None or not target.is_long:
+                return
+            expand = event.key == "right"
+            if target._expanded != expand:
+                target.set_expanded(expand)
+                event.stop()
+                event.prevent_default()
             return
 
         if event.key in ("up", "down") and isinstance(focused, Checkbox):
@@ -408,11 +572,10 @@ def _option_label(opt: Any) -> str:
     return str(opt)
 
 
-def _format_option(opt: Any) -> str:
+def _split_option(opt: Any) -> tuple[str, str]:
+    """Return ``(label, description)`` for an option dict or scalar."""
     if isinstance(opt, dict):
         label = str(opt.get("label") or opt.get("value") or opt)
         desc = str(opt.get("description") or "").strip()
-        if desc:
-            return f"{label} [dim]— {desc}[/dim]"
-        return label
-    return str(opt)
+        return label, desc
+    return str(opt), ""
