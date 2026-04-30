@@ -185,7 +185,7 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                 if self._has_issue_picker:
                     yield Label("Link GitHub issue (optional):")
                     issue_choices = tuple(
-                        (f"#{i.number} — {i.title}", str(i.number)) for i in self._issues
+                        (self._format_issue_label(i), str(i.number)) for i in self._issues
                     )
                     yield Select(
                         issue_choices,
