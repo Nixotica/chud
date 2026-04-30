@@ -191,6 +191,106 @@ async def list_issues(
     return issues
 
 
+_ISSUES_WITH_OPEN_PR_QUERY = """\
+query($owner: String!, $name: String!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $first, states: OPEN) {
+      nodes {
+        closingIssuesReferences(first: 20) {
+          nodes { number }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+async def list_issue_numbers_with_open_pr(
+    repo_path: Path,
+    *,
+    pr_limit: int = 100,
+    timeout: float = _LIST_ISSUES_TIMEOUT_S,
+) -> set[int]:
+    """Return the set of issue numbers that have any open PR linked to them.
+
+    Uses ``gh api graphql`` to read each open PR's ``closingIssuesReferences``
+    — which covers both closing-keyword references in the PR body / commits
+    (``closes #N``) and links added manually through GitHub's Development
+    sidebar. The new-session picker uses the result to hide issues already
+    in review, regardless of who or what made the PR.
+
+    The ``--json`` flag on ``gh issue list`` doesn't expose this field on
+    older gh versions (we hit that on 2.x in the field), so we go straight
+    to GraphQL — which always has it.
+
+    Every failure mode (no auth, owner/name lookup fails, timeout,
+    malformed JSON) collapses to an empty set; the caller treats that as
+    "no filter info" and the picker stays unfiltered rather than empty.
+    """
+    rc, out, err = await _run(
+        ["gh", "repo", "view", "--json", "owner,name"],
+        cwd=repo_path,
+        timeout=timeout,
+    )
+    if rc != 0:
+        log.warning("gh repo view failed (rc=%d) in %s: %s", rc, repo_path, err)
+        return set()
+    try:
+        meta = json.loads(out)
+        owner = str(meta["owner"]["login"])
+        name = str(meta["name"])
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        log.warning("gh repo view returned unexpected JSON in %s: %s", repo_path, e)
+        return set()
+
+    rc, out, err = await _run(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={_ISSUES_WITH_OPEN_PR_QUERY}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"first={pr_limit}",
+        ],
+        cwd=repo_path,
+        timeout=timeout,
+    )
+    if rc != 0:
+        log.warning("gh api graphql (PRs) failed (rc=%d) in %s: %s", rc, repo_path, err)
+        return set()
+    try:
+        raw = json.loads(out)
+        nodes = raw["data"]["repository"]["pullRequests"]["nodes"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        log.warning("gh api graphql (PRs) returned unexpected JSON in %s: %s", repo_path, e)
+        return set()
+    if not isinstance(nodes, list):
+        return set()
+
+    out_set: set[int] = set()
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        closing = n.get("closingIssuesReferences") or {}
+        pr_nodes = closing.get("nodes") if isinstance(closing, dict) else None
+        if not isinstance(pr_nodes, list):
+            continue
+        for ref in pr_nodes:
+            if not isinstance(ref, dict):
+                continue
+            try:
+                out_set.add(int(ref["number"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return out_set
+
+
 def build_issue_prompt(issue: Issue, user_prompt: str) -> str:
     """Render the agent's initial prompt with a linked GitHub issue prepended.
 

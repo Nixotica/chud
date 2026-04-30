@@ -28,6 +28,7 @@ from claude_agent_sdk.types import (
 )
 
 from chud.options import EffortLevel
+from chud.state import worktrees_root
 from chud.tools import AttachCallback, build_chud_mcp_server
 from chud.types import Event, EventKind, SessionState, SessionStatus
 
@@ -84,15 +85,15 @@ class AgentSession:
         # its tools see a real git checkout. With 0 attached repos, prefer the
         # user's launch directory (so the agent can `ls` and discover sibling
         # repos to attach via mcp__chud__attach_repo); fall back to the
-        # workspace root when no launch dir was provided. With 2+ repos, use
-        # the workspace root so the agent can `cd` between worktree subdirs.
+        # worktrees root when no launch dir was provided. With 2+ repos, use
+        # the worktrees root so the agent can `cd` between worktree subdirs.
         attached = list(self.state.attached_repos.values())
         if len(attached) == 1:
             cwd = attached[0].worktree_path
         elif len(attached) == 0 and self._launch_cwd is not None:
             cwd = self._launch_cwd
         else:
-            cwd = self.state.workspace_dir
+            cwd = worktrees_root()
 
         effort = cast(EffortLevel | None, self.effort)
         # Per-session in-process MCP server exposing chud-native tools to the
@@ -328,7 +329,7 @@ class AgentSession:
             f"session's attached worktrees ({listed}). To edit a different "
             f"repo, call mcp__chud__attach_repo with the repo toplevel; chud "
             f"will create a worktree on branch chud/{self.state.id} under "
-            f"{self.state.workspace_dir} and you should edit that copy "
+            f"{worktrees_root()} and you should edit that copy "
             f"instead of the user's main checkout."
         )
 

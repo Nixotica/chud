@@ -16,7 +16,6 @@ safe in the no-pending-decision case.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -54,9 +53,7 @@ class FakeClient:
 
 
 def _make_session() -> AgentSession:
-    return AgentSession(
-        SessionState(id="t1", workspace_dir=Path("/tmp/chud-test/t1")),
-    )
+    return AgentSession(SessionState(id="t1"))
 
 
 async def test_stop_resolves_pending_plan_decision_with_deny():

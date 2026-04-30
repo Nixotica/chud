@@ -76,6 +76,8 @@ All under `~/.local/share/chud/` (resolved via `platformdirs`):
 - Custom exceptions for failure boundaries (e.g. `WorktreeError`).
 - `contextlib.suppress` for best-effort cleanup paths.
 - Lint/format via `ruff` — line length `100`, target `py310`, rules `E,F,I,UP,B,SIM` (`pyproject.toml`).
+- Avoid verbose comment blocks — prefer self-explanatory code with well-named identifiers. Only comment when the *why* is non-obvious (a hidden constraint, subtle invariant, or workaround).
+- Favor refactoring over patching. When a change exposes duplication, awkward seams, or muddled responsibilities, restructure the code rather than layering more logic on top.
 
 ## Dependencies
 
