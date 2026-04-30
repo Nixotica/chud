@@ -199,7 +199,14 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
                         ),
                     )
                 defaults = user_default_options()
-                with VerticalScroll(id="options-group"):
+                # ``VerticalScroll`` is focusable by default; that adds a
+                # spurious tab stop between the prompt and the first checkbox.
+                # Disable focus on the container itself (mirrors the outer
+                # ``body`` scroll above); a focused checkbox inside still
+                # scrolls the parent into view.
+                options_scroll = VerticalScroll(id="options-group")
+                options_scroll.can_focus = False
+                with options_scroll:
                     yield Label("Options")
                     for opt in SESSION_OPTIONS:
                         yield Checkbox(
