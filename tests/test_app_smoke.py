@@ -61,7 +61,6 @@ async def test_session_list_renders_in_every_status():
         for i, status in enumerate(SessionStatus):
             st = SessionState(
                 id=f"sess{i:04d}",
-                workspace_dir=Path("/tmp"),
                 status=status,
                 initial_prompt=f"prompt for {status.value}",
             )
@@ -79,7 +78,7 @@ async def test_session_list_update_renders_after_status_change():
     async with app.run_test() as pilot:
         await pilot.pause()
         slv = app.query_one(SessionListView)
-        st = SessionState(id="sess1", workspace_dir=Path("/tmp"), initial_prompt="hi")
+        st = SessionState(id="sess1", initial_prompt="hi")
         slv.add_session(st)
         await pilot.pause()
 
@@ -103,7 +102,6 @@ async def test_session_list_long_prompt_truncates_without_error():
         slv = app.query_one(SessionListView)
         st = SessionState(
             id="long",
-            workspace_dir=Path("/tmp"),
             initial_prompt="x" * 500 + "\nsecond line should be ignored",
         )
         slv.add_session(st)
@@ -117,7 +115,7 @@ async def test_session_view_renders_every_event_kind():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="sv1", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="sv1", initial_prompt="p")
         st.attached_repos["r"] = Worktree(
             repo_path=Path("/tmp/repo"),
             worktree_path=Path("/tmp/wt"),
@@ -166,7 +164,7 @@ async def test_session_view_escapes_bracket_payloads():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        view.show_session(SessionState(id="x", workspace_dir=Path("/tmp")))
+        view.show_session(SessionState(id="x"))
         await pilot.pause()
 
         # Each of these payloads contains content that would break a markup parser
@@ -211,7 +209,7 @@ async def test_session_view_escape_moves_focus_off_input():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="esc1", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="esc1", initial_prompt="p")
         view.show_session(st)
         await pilot.pause()
         view.input.focus()
@@ -240,7 +238,7 @@ async def test_session_view_show_session_clears_and_disables_input():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="x", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="x", initial_prompt="p")
         view.show_session(st)
         await pilot.pause()
         assert not view.input.disabled
@@ -389,7 +387,6 @@ async def test_cleanup_modal_unpublished_shows_destructive_copy():
         await pilot.pause()
         state = SessionState(
             id="sess1234",
-            workspace_dir=Path("/tmp/ws"),
             initial_prompt="do thing",
         )
         modal = CleanupConfirmationModal(state=state)
@@ -409,7 +406,6 @@ async def test_cleanup_modal_published_swaps_to_success_copy():
         await pilot.pause()
         state = SessionState(
             id="sess5678",
-            workspace_dir=Path("/tmp/ws"),
             initial_prompt="do thing",
         )
         modal = CleanupConfirmationModal(
@@ -549,7 +545,6 @@ async def test_app_active_sessions_by_issue_skips_terminal_states():
         def _stub(sid: str, issue_num: int | None, status: SessionStatus) -> Any:
             state = SessionState(
                 id=sid,
-                workspace_dir=Path(f"/tmp/{sid}"),
                 issue_number=issue_num,
             )
             state.status = status
@@ -657,7 +652,6 @@ async def test_new_session_flow_passes_modal_prompt_through_for_issue(monkeypatc
             captured["repo_path"] = repo_path
             state = SessionState(
                 id="sessISSUE",
-                workspace_dir=Path("/tmp/ws"),
                 initial_prompt=prompt,
             )
             return SimpleNamespace(state=state)
@@ -722,7 +716,6 @@ async def test_new_session_flow_no_issue_passes_prompt_verbatim(monkeypatch):
             return SimpleNamespace(
                 state=SessionState(
                     id="sessNO",
-                    workspace_dir=Path("/tmp/ws"),
                     initial_prompt=prompt,
                 )
             )

@@ -61,10 +61,8 @@ class SessionManager:
         issue_number: int | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
-        workspace = state_mod.workspaces_root() / sid
         st = SessionState(
             id=sid,
-            workspace_dir=workspace,
             initial_prompt=prompt,
             options=normalize_options(options),
             effort=normalize_effort(effort),
@@ -128,7 +126,7 @@ class SessionManager:
         for sid in list(self.sessions):
             await self.kill_session(sid)
 
-    async def kill_session(self, session_id: str, cleanup_workspace: bool = False) -> None:
+    async def kill_session(self, session_id: str, cleanup_worktrees: bool = False) -> None:
         sess = self.sessions.pop(session_id, None)
         task = self._fanout_tasks.pop(session_id, None)
         wt_mgr = self.worktrees.pop(session_id, None)
@@ -144,11 +142,11 @@ class SessionManager:
                 await done_task
         if sess is not None:
             await sess.stop()
-        if cleanup_workspace and wt_mgr is not None:
+        if cleanup_worktrees and wt_mgr is not None:
             try:
-                wt_mgr.cleanup_workspace()
+                wt_mgr.cleanup_worktrees()
             except Exception:
-                log.exception("cleanup_workspace failed for session %s", session_id)
+                log.exception("cleanup_worktrees failed for session %s", session_id)
         self._persist()
 
     # ------------------------------------------------------------------ event fanout

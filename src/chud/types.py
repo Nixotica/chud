@@ -11,7 +11,6 @@ KEY_WORKTREE_PATH = "worktree_path"
 KEY_BRANCH = "branch"
 
 KEY_ID = "id"
-KEY_WORKSPACE_DIR = "workspace_dir"
 KEY_STATUS = "status"
 KEY_INITIAL_PROMPT = "initial_prompt"
 KEY_ATTACHED_REPOS = "attached_repos"
@@ -60,7 +59,6 @@ class Worktree:
 @dataclass
 class SessionState:
     id: str
-    workspace_dir: Path
     status: SessionStatus = SessionStatus.NEW
     initial_prompt: str = ""
     attached_repos: dict[str, Worktree] = field(default_factory=dict)
@@ -79,7 +77,6 @@ class SessionState:
     def to_dict(self) -> dict[str, Any]:
         return {
             KEY_ID: self.id,
-            KEY_WORKSPACE_DIR: str(self.workspace_dir),
             KEY_STATUS: self.status.value,
             KEY_INITIAL_PROMPT: self.initial_prompt,
             KEY_ATTACHED_REPOS: {k: v.to_dict() for k, v in self.attached_repos.items()},
@@ -100,7 +97,6 @@ class SessionState:
 
         return cls(
             id=d[KEY_ID],
-            workspace_dir=Path(d[KEY_WORKSPACE_DIR]),
             status=SessionStatus(d[KEY_STATUS]),
             initial_prompt=d.get(KEY_INITIAL_PROMPT, ""),
             attached_repos={

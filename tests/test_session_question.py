@@ -18,9 +18,8 @@ from chud.types import EventKind, SessionState, SessionStatus
 
 
 def _make_session(tmp_path: Path) -> AgentSession:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    state = SessionState(id="t-question", workspace_dir=workspace)
+    del tmp_path
+    state = SessionState(id="t-question")
     state.status = SessionStatus.EXECUTING
     return AgentSession(state)
 
