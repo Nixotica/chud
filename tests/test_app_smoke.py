@@ -22,7 +22,11 @@ from chud.gh import Issue
 from chud.types import Event, EventKind, SessionState, SessionStatus, Worktree
 from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
-from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
+from chud.widgets.new_session_modal import (
+    ACTIVE_CHUD_ICON,
+    NewSessionModal,
+    NewSessionResult,
+)
 from chud.widgets.plan_modal import PlanApprovalModal
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
@@ -481,11 +485,150 @@ async def test_new_session_modal_with_empty_issues_hides_picker():
         _force_render(modal)
 
 
+async def test_new_session_modal_picker_populates_prompt():
+    """Selecting an issue from the picker pre-fills the prompt textarea with
+    the issue's title + URL + body + ``---`` separator."""
+    from textual.widgets import TextArea
+
+    issue = _sample_issue(number=42, title="Picker test")
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal(issues=[issue]))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        select = modal.query_one("#issue", Select)
+        select.value = str(issue.number)
+        await pilot.pause()
+        text = modal.query_one("#prompt", TextArea).text
+        assert "GitHub issue #42: Picker test" in text
+        assert "https://github.com/x/y/issues/42" in text
+        assert "ctx body" in text
+        assert "\n---\n" in text
+
+
+async def test_new_session_flow_filters_issues_with_open_pr(monkeypatch):
+    """End-to-end: an issue listed in ``_issues_with_pr_cache`` (populated
+    by the background ``gh.list_issue_numbers_with_open_pr`` refresh) is
+    dropped from the picker regardless of who or what made the PR."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr("chud.app.detect_cwd_repo", lambda: Path("/fake/repo"))
+
+        keep = _sample_issue(number=10, title="open work")
+        drop = _sample_issue(number=11, title="already in PR")
+        app._issues_cache = [keep, drop]
+        app._issues_with_pr_cache = {11}
+        app._launch_repo = Path("/fake/repo")
+
+        captured: dict[str, Any] = {}
+
+        async def fake_push_screen_wait(modal: Any) -> NewSessionResult | None:
+            assert isinstance(modal, NewSessionModal)
+            captured["issues"] = list(modal._issues)
+            return None
+
+        monkeypatch.setattr(app, "push_screen_wait", fake_push_screen_wait)
+
+        await app._new_session_flow()
+        seen_numbers = [i.number for i in captured["issues"]]
+        assert 10 in seen_numbers
+        assert 11 not in seen_numbers
+
+
+async def test_app_active_sessions_by_issue_skips_terminal_states():
+    """``ChudApp._active_sessions_by_issue`` only counts sessions whose status
+    is non-terminal (DONE/ERRORED are excluded — those chuds aren't 'working'
+    anymore)."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def _stub(sid: str, issue_num: int | None, status: SessionStatus) -> Any:
+            state = SessionState(
+                id=sid,
+                workspace_dir=Path(f"/tmp/{sid}"),
+                issue_number=issue_num,
+            )
+            state.status = status
+            return SimpleNamespace(state=state)
+
+        app.manager.sessions = {  # type: ignore[assignment]
+            "a": _stub("a", 7, SessionStatus.EXECUTING),
+            "b": _stub("b", 7, SessionStatus.AWAITING_USER),
+            "c": _stub("c", 7, SessionStatus.DONE),
+            "d": _stub("d", 9, SessionStatus.ERRORED),
+            "e": _stub("e", None, SessionStatus.EXECUTING),
+        }
+        try:
+            out = app._active_sessions_by_issue()
+            assert sorted(out.keys()) == [7]
+            assert sorted(out[7]) == ["a", "b"]
+        finally:
+            # Clear before teardown — the manager's shutdown iterates sessions
+            # and calls .stop() on each, which our SimpleNamespace stubs lack.
+            app.manager.sessions = {}
+
+
+async def test_new_session_modal_marks_issues_with_active_chud():
+    """Issues that already have an active chud session linked to them get a
+    ``[chud working]`` prefix in the picker label so the user knows before
+    spawning a duplicate."""
+    one = _sample_issue(number=1, title="solo")
+    two = _sample_issue(number=2, title="busy")
+    three = _sample_issue(number=3, title="crowded")
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = NewSessionModal(
+            issues=[one, two, three],
+            active_sessions_by_issue={2: ["sess-A"], 3: ["sess-A", "sess-B"]},
+        )
+        labels = {i.number: modal._format_issue_label(i) for i in [one, two, three]}
+        assert labels[1] == "#1 — solo"
+        assert labels[2] == f"{ACTIVE_CHUD_ICON} #2 — busy"
+        assert labels[3] == f"{ACTIVE_CHUD_ICON}×2 #3 — crowded"
+        # Drive the modal through compose() to make sure the helper actually
+        # feeds Select.
+        app.push_screen(modal)
+        await pilot.pause()
+        select = app.screen.query_one("#issue", Select)
+        rendered = {pair[1]: pair[0] for pair in select._options}  # type: ignore[attr-defined]
+        assert rendered[str(2)] == f"{ACTIVE_CHUD_ICON} #2 — busy"
+        assert rendered[str(3)] == f"{ACTIVE_CHUD_ICON}×2 #3 — crowded"
+
+
+async def test_new_session_modal_picker_does_not_clobber_user_edits():
+    """If the user has already typed something the picker must not overwrite
+    it on issue selection."""
+    from textual.widgets import TextArea
+
+    issue = _sample_issue(number=8, title="Don't overwrite me")
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal(issues=[issue]))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        prompt_area = modal.query_one("#prompt", TextArea)
+        prompt_area.text = "user typed this first"
+        select = modal.query_one("#issue", Select)
+        select.value = str(issue.number)
+        await pilot.pause()
+        assert modal.query_one("#prompt", TextArea).text == "user typed this first"
+
+
 # --- New-session flow: issue → templated prompt ------------------------------
 
 
-async def test_new_session_flow_injects_issue_into_prompt(monkeypatch):
-    """End-to-end: picking an issue templates it into the create_session prompt."""
+async def test_new_session_flow_passes_modal_prompt_through_for_issue(monkeypatch):
+    """The modal now pre-populates the prompt with the issue content (see
+    NewSessionModal.on_select_changed) and returns the merged text in
+    ``NewSessionResult.prompt``. The flow must pass it through verbatim — no
+    second prepend, otherwise the issue head would appear twice."""
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -495,12 +638,11 @@ async def test_new_session_flow_injects_issue_into_prompt(monkeypatch):
         monkeypatch.setattr(gh_mod, "is_available", lambda: True)
         issue = _sample_issue(number=7, title="Tighten retries")
 
-        async def fake_list_issues(_repo, **_kw):
-            return [issue]
+        # Seed the cache directly — the flow reads from the background-refreshed
+        # cache rather than awaiting a fresh fetch on each `n` press.
+        app._issues_cache = [issue]
+        app._launch_repo = Path("/fake/repo")
 
-        monkeypatch.setattr(gh_mod, "list_issues", fake_list_issues)
-
-        # Capture the prompt that would reach the agent runtime.
         captured: dict[str, Any] = {}
 
         async def fake_create_session(
@@ -522,15 +664,16 @@ async def test_new_session_flow_injects_issue_into_prompt(monkeypatch):
 
         monkeypatch.setattr(app.manager, "create_session", fake_create_session)
 
-        # Replace push_screen_wait with a stub that returns a synthetic result
-        # carrying the picked issue. This avoids having to drive the modal via
-        # keystrokes — we're testing the flow's plumbing, not Textual's input.
+        # Modal stub returns what a real modal would produce when the user
+        # picks the issue and then types extra context: the issue head + body
+        # + "---" + their additions, all already in `prompt`.
+        merged_prompt = gh_mod.build_issue_prompt(issue, "please fix it")
+
         async def fake_push_screen_wait(modal: Any) -> NewSessionResult:
             assert isinstance(modal, NewSessionModal)
-            # The picker should have been mounted with our issue.
             assert modal._has_issue_picker
             return NewSessionResult(
-                prompt="please fix it",
+                prompt=merged_prompt,
                 options={},
                 effort=None,
                 issue=issue,
@@ -541,12 +684,13 @@ async def test_new_session_flow_injects_issue_into_prompt(monkeypatch):
         await app._new_session_flow()
 
         prompt = captured["prompt"]
+        assert prompt == merged_prompt, "flow must not re-prepend issue content"
+        # Sanity: the merged text contains the expected issue pieces.
         assert "GitHub issue #7: Tighten retries" in prompt
         assert "https://github.com/x/y/issues/7" in prompt
         assert "ctx body" in prompt
         assert "\n---\n" in prompt
         assert prompt.rstrip().endswith("please fix it")
-        # And the repo flowed through to the manager.
         assert captured["repo_path"] == Path("/fake/repo")
 
 

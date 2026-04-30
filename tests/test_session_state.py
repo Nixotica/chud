@@ -141,3 +141,30 @@ def test_legacy_session_without_approved_plan_loads_as_none():
     }
     s = SessionState.from_dict(legacy)
     assert s.approved_plan is None
+
+
+def test_session_state_roundtrips_issue_number():
+    s = SessionState(
+        id="abc123",
+        workspace_dir=Path("/tmp/chud-ws/abc123"),
+        issue_number=42,
+    )
+    d = s.to_dict()
+    assert d["issue_number"] == 42
+    assert SessionState.from_dict(d).issue_number == 42
+
+
+def test_session_state_defaults_issue_number_to_none_when_absent():
+    legacy = {
+        "id": "old123",
+        "workspace_dir": "/tmp/old",
+        "status": "new",
+        "initial_prompt": "legacy",
+        "attached_repos": {},
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
+        "pending_question": None,
+        "error": None,
+        # no "issue_number" key
+    }
+    assert SessionState.from_dict(legacy).issue_number is None
