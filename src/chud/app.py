@@ -615,7 +615,7 @@ class ChudApp(App[None]):
                 )
                 if not confirmed:
                     return
-                await self.manager.kill_session(session_id, cleanup_workspace=True)
+                await self.manager.kill_session(session_id, cleanup_worktrees=True)
                 self.query_one(SessionListView).remove_session(session_id)
                 self._event_log.pop(session_id, None)
                 if self._selected_session_id == session_id:

@@ -249,6 +249,16 @@ async def publish_draft_prs(
                 )
                 continue
 
+        # Refresh ``origin/{base}`` before counting commits ahead. Without this,
+        # a stale local ref (common when the user hasn't fetched in a while)
+        # makes ``rev-list`` over-count, we push a branch whose tip already
+        # exists on the remote, and ``gh pr create`` opens an empty-diff PR.
+        # Best-effort: a fetch failure (offline, auth) is logged and we fall
+        # through to the existing rev-list, where the real failure surfaces.
+        rc, _, ferr = await _run(["git", "fetch", "origin", base], cwd=worktree)
+        if rc != 0:
+            log.warning("git fetch origin %s failed in %s: %s", base, worktree, ferr.strip())
+
         rc, count, err = await _run(
             ["git", "rev-list", "--count", f"origin/{base}..HEAD"],
             cwd=worktree,
