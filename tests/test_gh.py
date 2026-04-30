@@ -160,6 +160,77 @@ async def test_list_issues_returns_empty_on_empty_stdout(monkeypatch):
     assert await list_issues(Path("/r")) == []
 
 
+async def test_list_issue_numbers_with_open_pr_parses_graphql(monkeypatch):
+    """The GraphQL response collapses to the flat set of issue numbers any
+    open PR would close. Multiple PRs that reference the same issue
+    coalesce; PRs with no closing references are skipped."""
+    repo_view = json.dumps({"owner": {"login": "x"}, "name": "y"})
+    graphql = json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "nodes": [
+                            {
+                                "closingIssuesReferences": {
+                                    "nodes": [{"number": 1}, {"number": 2}],
+                                },
+                            },
+                            {
+                                "closingIssuesReferences": {
+                                    "nodes": [{"number": 1}, {"number": 3}],
+                                },
+                            },
+                            {"closingIssuesReferences": {"nodes": []}},
+                        ],
+                    },
+                },
+            },
+        }
+    )
+
+    calls: list[list[str]] = []
+
+    async def fake_run(
+        cmd: list[str],
+        cwd: Path | None = None,
+        *,
+        timeout: float = 0.0,
+    ) -> tuple[int, str, str]:
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return 0, repo_view, ""
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return 0, graphql, ""
+        return 1, "", "unexpected command"
+
+    monkeypatch.setattr(gh_mod, "_run", fake_run)
+    nums = await gh_mod.list_issue_numbers_with_open_pr(Path("/r"))
+    assert nums == {1, 2, 3}
+    assert calls[0][:3] == ["gh", "repo", "view"]
+    assert calls[1][:3] == ["gh", "api", "graphql"]
+
+
+async def test_list_issue_numbers_with_open_pr_returns_empty_on_repo_view_failure(
+    monkeypatch,
+):
+    """If ``gh repo view`` can't resolve owner/name, skip GraphQL and
+    return an empty set — picker stays unfiltered rather than empty."""
+
+    async def fake_run(
+        cmd: list[str],
+        cwd: Path | None = None,
+        *,
+        timeout: float = 0.0,
+    ) -> tuple[int, str, str]:
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return 1, "", "no remote"
+        raise AssertionError(f"graphql should not be invoked, got {cmd}")
+
+    monkeypatch.setattr(gh_mod, "_run", fake_run)
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+
+
 async def test_list_issues_skips_malformed_items(monkeypatch):
     """Items missing required keys are dropped, well-formed ones survive."""
     payload = [

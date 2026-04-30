@@ -11,7 +11,6 @@ KEY_WORKTREE_PATH = "worktree_path"
 KEY_BRANCH = "branch"
 
 KEY_ID = "id"
-KEY_WORKSPACE_DIR = "workspace_dir"
 KEY_STATUS = "status"
 KEY_INITIAL_PROMPT = "initial_prompt"
 KEY_ATTACHED_REPOS = "attached_repos"
@@ -22,6 +21,7 @@ KEY_ERROR = "error"
 KEY_OPTIONS = "options"
 KEY_APPROVED_PLAN = "approved_plan"
 KEY_EFFORT = "effort"
+KEY_ISSUE_NUMBER = "issue_number"
 
 
 class SessionStatus(StrEnum):
@@ -59,7 +59,6 @@ class Worktree:
 @dataclass
 class SessionState:
     id: str
-    workspace_dir: Path
     status: SessionStatus = SessionStatus.NEW
     initial_prompt: str = ""
     attached_repos: dict[str, Worktree] = field(default_factory=dict)
@@ -70,11 +69,14 @@ class SessionState:
     options: dict[str, bool] = field(default_factory=dict)
     approved_plan: str | None = None
     effort: str | None = None
+    # GitHub issue number this session was launched from, if any. Set when
+    # the user picks an issue in the new-session modal; consumed by callers
+    # that want to surface "an existing chud is working on issue #N" hints.
+    issue_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             KEY_ID: self.id,
-            KEY_WORKSPACE_DIR: str(self.workspace_dir),
             KEY_STATUS: self.status.value,
             KEY_INITIAL_PROMPT: self.initial_prompt,
             KEY_ATTACHED_REPOS: {k: v.to_dict() for k, v in self.attached_repos.items()},
@@ -85,6 +87,7 @@ class SessionState:
             KEY_OPTIONS: dict(self.options),
             KEY_APPROVED_PLAN: self.approved_plan,
             KEY_EFFORT: self.effort,
+            KEY_ISSUE_NUMBER: self.issue_number,
         }
 
     @classmethod
@@ -94,7 +97,6 @@ class SessionState:
 
         return cls(
             id=d[KEY_ID],
-            workspace_dir=Path(d[KEY_WORKSPACE_DIR]),
             status=SessionStatus(d[KEY_STATUS]),
             initial_prompt=d.get(KEY_INITIAL_PROMPT, ""),
             attached_repos={
@@ -107,6 +109,7 @@ class SessionState:
             options=normalize_options(d.get(KEY_OPTIONS)),
             approved_plan=d.get(KEY_APPROVED_PLAN),
             effort=normalize_effort(d.get(KEY_EFFORT)),
+            issue_number=d.get(KEY_ISSUE_NUMBER),
         )
 
 

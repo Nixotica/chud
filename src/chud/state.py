@@ -16,8 +16,8 @@ def data_root() -> Path:
     return root
 
 
-def workspaces_root() -> Path:
-    root = data_root() / "workspaces"
+def worktrees_root() -> Path:
+    root = data_root() / "worktrees"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

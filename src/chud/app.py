@@ -18,7 +18,6 @@ from chud import state as state_mod
 from chud.gh import Issue
 from chud.manager import SessionManager
 from chud.types import Event, EventKind, SessionStatus
-from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.plan_modal import PlanApprovalModal
@@ -54,11 +53,10 @@ class ChudApp(App[None]):
     """Multi-agent Claude Code TUI."""
 
     TITLE = "chud"
-    SUB_TITLE = "multi-agent Claude Code orchestrator"
+    SUB_TITLE = "multi-agent Claude HUD"
 
     BINDINGS = [
         ("n", "new_session", "New session"),
-        ("a", "attach_repo", "Attach repo"),
         ("k", "kill_session", "Kill session"),
         ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
@@ -89,9 +87,23 @@ class ChudApp(App[None]):
         self._prompt_queue: list[PromptRequest] = []
         self._prompt_active: PromptRequest | None = None
         # Number of user-initiated modals currently on screen (NewSession,
-        # AttachRepo). While > 0, session-driven prompts stay queued so they
+        # Settings). While > 0, session-driven prompts stay queued so they
         # can't pop over a modal the user is actively typing into.
         self._user_modal_depth: int = 0
+        # Launch-time repo + cached open issues for the new-session modal.
+        # Populated in on_mount() and refreshed in the background so pressing
+        # `n` doesn't pay for a `gh issue list` shell-out each time.
+        # ``_issues_cache`` mirrors ``_fetch_issues_for_modal``'s contract:
+        # ``None`` means "hide picker" (no gh / no repo / first refresh
+        # in-flight / no open issues), non-empty list means ready.
+        # ``_issues_with_pr_cache`` carries the set of issue numbers that
+        # have an open PR linked (closing-keyword or Development-sidebar);
+        # populated by ``gh.list_issue_numbers_with_open_pr`` in the same
+        # background refresh and used to filter the picker.
+        self._launch_repo: Path | None = None
+        self._issues_cache: list[Issue] | None = None
+        self._issues_with_pr_cache: set[int] = set()
+        self._issues_timer: Any = None  # textual.timer.Timer; loose typing.
 
     # ------------------------------------------------------------------ layout
 
@@ -110,8 +122,65 @@ class ChudApp(App[None]):
         self.run_worker(self._event_pump(), exclusive=False, name="event-pump")
         if self._dev_hook is not None:
             self.run_worker(self._dev_hook(self), exclusive=False, name="dev-hook")
+        # Detect launch repo once + start background issue refresh so the
+        # new-session picker is ready when the user presses `n`. Skip when
+        # gh isn't installed (no point polling) or chud was launched outside
+        # any git repo (nothing to fetch).
+        self._launch_repo = detect_cwd_repo()
+        if self._launch_repo is not None and gh_mod.is_available():
+            self.run_worker(self._refresh_issues_cache(), exclusive=False, name="issues-init")
+            # Periodic refresh so a fresh issue created during the session
+            # appears within a couple of minutes. Open-issue lists don't churn
+            # often, so 120s is a generous floor that keeps the cost trivial.
+            self._issues_timer = self.set_interval(120.0, self._schedule_issues_refresh)
+
+    def _schedule_issues_refresh(self) -> None:
+        """Timer callback — schedule a fresh fetch as a background worker."""
+        self.run_worker(self._refresh_issues_cache(), exclusive=False, name="issues-refresh")
+
+    def _active_sessions_by_issue(self) -> dict[int, list[str]]:
+        """Map of GitHub issue number → session ids of *active* chud sessions
+        currently linked to that issue.
+
+        "Active" means status is anything other than DONE/ERRORED — i.e. a
+        chud is still working on it. Used by ``NewSessionModal`` to mark
+        issues in the picker dropdown so the user knows another session is
+        already on it before they spin up a duplicate.
+        """
+        result: dict[int, list[str]] = {}
+        terminal = {SessionStatus.DONE, SessionStatus.ERRORED}
+        for sid, sess in self.manager.sessions.items():
+            issue_num = sess.state.issue_number
+            if issue_num is None or sess.state.status in terminal:
+                continue
+            result.setdefault(issue_num, []).append(sid)
+        return result
+
+    async def _refresh_issues_cache(self) -> None:
+        """Fetch the launch repo's open issues + PR-linked issue numbers and
+        update both caches.
+
+        On any failure (logged inside the gh helpers) we keep the previous
+        cached value rather than blanking the picker — a stale list is
+        better than no list at the moment the user presses `n`.
+        """
+        if self._launch_repo is None:
+            return
+        self._issues_cache = await self._fetch_issues_for_modal(self._launch_repo)
+        # Only fetch the PR-linked set if we actually have issues (otherwise
+        # there's nothing to filter and the second subprocess is wasted).
+        if self._issues_cache:
+            self._issues_with_pr_cache = await gh_mod.list_issue_numbers_with_open_pr(
+                self._launch_repo
+            )
+        else:
+            self._issues_with_pr_cache = set()
 
     async def on_unmount(self) -> None:
+        if self._issues_timer is not None:
+            with contextlib.suppress(Exception):
+                self._issues_timer.stop()
+            self._issues_timer = None
         await self.manager.shutdown()
 
     # ------------------------------------------------------------------ focus
@@ -145,17 +214,28 @@ class ChudApp(App[None]):
         return issues or None
 
     async def _new_session_flow(self) -> None:
-        # Detect the cwd repo and pre-fetch issues *before* showing the modal
-        # so the picker can render immediately. The fetch has its own 5s
-        # timeout in gh.list_issues, so a slow network never delays the modal
-        # by more than that.
+        # Detect the cwd repo synchronously (it's a quick `git rev-parse`).
+        # For the issue picker, consume the background-refreshed cache —
+        # awaiting `gh issue list` here was the source of the `n`-press lag.
+        # If the cache hasn't loaded yet (very first `n` within ~hundreds of
+        # ms of startup, or chud launched outside a repo) the picker is just
+        # hidden for this open and the modal still appears instantly.
         detected = detect_cwd_repo()
-        issues = await self._fetch_issues_for_modal(detected) if detected is not None else None
+        issues = self._issues_cache if detected is not None else None
+        if issues and self._issues_with_pr_cache:
+            # Drop issues that already have an open PR linked to them
+            # (closing-keyword reference or Development-sidebar link) — the
+            # user presumably doesn't want to spawn a duplicate chud on
+            # something already in review, regardless of who or what made
+            # the PR. The set comes from the same background refresh that
+            # populated ``_issues_cache``.
+            issues = [i for i in issues if i.number not in self._issues_with_pr_cache]
+        active_by_issue = self._active_sessions_by_issue() if issues else {}
 
         self._user_modal_depth += 1
         try:
             result: NewSessionResult | None = await self.push_screen_wait(
-                NewSessionModal(issues=issues)
+                NewSessionModal(issues=issues, active_sessions_by_issue=active_by_issue)
             )
         finally:
             self._user_modal_depth -= 1
@@ -163,10 +243,11 @@ class ChudApp(App[None]):
         if result is None:
             return
         if result.issue is not None:
+            # The modal already pre-populated the prompt with the issue's
+            # head + body + "---" separator (see NewSessionModal.on_select_changed),
+            # so result.prompt is already the merged text — no second prepend.
             log.info("new session linked to issue #%d", result.issue.number)
-            final_prompt = gh_mod.build_issue_prompt(result.issue, result.prompt)
-        else:
-            final_prompt = result.prompt
+        final_prompt = result.prompt
         launch = None if detected is not None else Path.cwd()
         try:
             sess = await self.manager.create_session(
@@ -175,6 +256,7 @@ class ChudApp(App[None]):
                 launch_cwd=launch,
                 options=result.options,
                 effort=result.effort,
+                issue_number=result.issue.number if result.issue is not None else None,
             )
         except Exception as e:
             log.exception("create_session failed")
@@ -182,27 +264,6 @@ class ChudApp(App[None]):
             return
         self.query_one(SessionListView).add_session(sess.state)
         self._select_session(sess.state.id)
-
-    def action_attach_repo(self) -> None:
-        self.run_worker(self._attach_repo_flow(), exclusive=False)
-
-    async def _attach_repo_flow(self) -> None:
-        sid = self._selected_session_id
-        if sid is None:
-            self.notify("No session selected.", severity="warning")
-            return
-        self._user_modal_depth += 1
-        try:
-            repo: Path | None = await self.push_screen_wait(AttachRepoModal())
-        finally:
-            self._user_modal_depth -= 1
-            self._maybe_show_next_prompt()
-        if repo is None:
-            return
-        try:
-            await self.manager.attach_repo(sid, repo)
-        except Exception as e:
-            self.notify(f"attach_repo failed: {e}", severity="error")
 
     def action_settings(self) -> None:
         self.run_worker(self._settings_flow(), exclusive=False)
@@ -377,6 +438,15 @@ class ChudApp(App[None]):
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
             view.transcript.write(f"[bold green]+ draft PR:[/bold green] {repo} → {url}")
+            # Refresh the issues + PR-link caches now so the next `n` press
+            # filters out the issue this PR just attached to, instead of
+            # waiting for the 120s background tick. GitHub may need a moment
+            # to register the Development-sidebar link, so this is best-
+            # effort — the periodic refresh will catch any lag.
+            if self._launch_repo is not None:
+                self.run_worker(
+                    self._refresh_issues_cache(), exclusive=False, name="issues-pr-refresh"
+                )
         elif event.kind == EventKind.PR_FAILED:
             err = event.payload.get("error", "")
             repo = event.payload.get("repo", "")
@@ -419,7 +489,7 @@ class ChudApp(App[None]):
         if self._prompt_active is not None:
             return
         if self._user_modal_depth > 0:
-            # A user-initiated modal (NewSession/AttachRepo) is on screen;
+            # A user-initiated modal (NewSession/Settings) is on screen;
             # don't pop a session-driven prompt over it. The flow that closes
             # the user modal calls back into us once it's gone.
             return
@@ -522,7 +592,7 @@ class ChudApp(App[None]):
                 )
                 if not confirmed:
                     return
-                await self.manager.kill_session(session_id, cleanup_workspace=True)
+                await self.manager.kill_session(session_id, cleanup_worktrees=True)
                 self.query_one(SessionListView).remove_session(session_id)
                 self._event_log.pop(session_id, None)
                 if self._selected_session_id == session_id:

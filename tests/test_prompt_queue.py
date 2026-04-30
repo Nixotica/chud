@@ -30,13 +30,12 @@ def _register_session(app: ChudApp, sid: str, tmp_path: Path) -> AgentSession:
     Queue logic only inspects ``app.manager.sessions`` — we don't need the
     SessionListView row or a real SDK client for these tests.
     """
+    del tmp_path
     state = SessionState(
         id=sid,
-        workspace_dir=tmp_path / sid,
         status=SessionStatus.EXECUTING,
         initial_prompt=f"prompt {sid}",
     )
-    state.workspace_dir.mkdir(parents=True, exist_ok=True)
     sess = AgentSession(state, model=None)
     app.manager.sessions[sid] = sess
     return sess

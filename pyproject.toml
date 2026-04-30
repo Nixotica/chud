@@ -33,6 +33,7 @@ Repository = "https://github.com/Nixotica/chud"
 [tool.hatch.version]
 source = "vcs"
 tag-pattern = "^v(?P<version>.+)$"
+raw-options = { git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v*"] }
 
 [tool.hatch.build.hooks.vcs]
 # Writes the resolved version into the package at build time so importlib.metadata

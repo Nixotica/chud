@@ -11,13 +11,12 @@ from chud.types import SessionState, Worktree
 def _state_with_one_repo(approved_plan: str | None = None) -> SessionState:
     s = SessionState(
         id="sess1",
-        workspace_dir=Path("/tmp/chud-ws/sess1"),
         initial_prompt="add a foo",
         approved_plan=approved_plan,
     )
     s.attached_repos["myrepo"] = Worktree(
         repo_path=Path("/tmp/myrepo"),
-        worktree_path=Path("/tmp/chud-ws/sess1/myrepo"),
+        worktree_path=Path("/tmp/chud-wt/sess1-myrepo"),
         branch="chud/add-a-foo-sess1",
     )
     return s
@@ -152,6 +151,27 @@ def test_pick_body_uses_configured_footer_template(monkeypatch):
     assert "*Draft PR opened by chud session" not in body
 
 
+def test_pick_body_prepends_closes_when_issue_linked():
+    """``Closes #N`` lands at the top of the body when the session is linked
+    to a GitHub issue. This tells GitHub to wire up the Development sidebar
+    so the issue is filtered from the new-session picker on subsequent opens.
+    """
+    plan = "# Title\n\n## Context\n\nReasons.\n"
+    s = _state_with_one_repo(approved_plan=plan)
+    s.issue_number = 42
+    body = pr_mod.pick_body(s)
+    assert body.startswith("Closes #42\n\n")
+
+
+def test_pick_body_omits_closes_when_no_issue_linked():
+    """No issue → no ``Closes`` line; body is unchanged from the legacy shape."""
+    plan = "# Title\n\n## Context\n\nReasons.\n"
+    s = _state_with_one_repo(approved_plan=plan)
+    body = pr_mod.pick_body(s)
+    assert not body.startswith("Closes #")
+    assert body.startswith("Reasons.")
+
+
 def test_body_from_prompt_uses_configured_footer_template(monkeypatch):
     monkeypatch.setattr(pr_mod, "render_pr_body_footer", lambda sid: f"FOOTER[{sid}]")
     body = pr_mod._body_from_prompt("xyz", "do the thing")
@@ -180,6 +200,8 @@ async def test_publish_draft_prs_discards_clean_empty_branch(monkeypatch):
         calls.append(cmd)
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, "", ""  # clean
         if cmd[:3] == ["git", "rev-list", "--count"]:
@@ -211,6 +233,8 @@ async def test_publish_draft_prs_auto_commits_dirty_worktree(monkeypatch):
         calls.append(cmd)
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, " M src/foo.py\n?? src/new.py", ""  # dirty
         if cmd[:3] == ["git", "add", "-A"]:
@@ -254,6 +278,8 @@ async def test_publish_draft_prs_auto_commit_uses_plan_title(monkeypatch):
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, " M f", ""
         if cmd[:3] == ["git", "add", "-A"]:
@@ -285,6 +311,8 @@ async def test_publish_draft_prs_auto_commit_failure_surfaces_as_error(monkeypat
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, " M f", ""
         if cmd[:3] == ["git", "add", "-A"]:
@@ -311,6 +339,8 @@ async def test_publish_draft_prs_happy_path(monkeypatch):
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, "", ""  # clean — agent already committed
         if cmd[:3] == ["git", "rev-list", "--count"]:
@@ -337,6 +367,8 @@ async def test_publish_draft_prs_reports_push_failure(monkeypatch):
     async def fake_run(cmd, cwd=None):
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, "", ""
         if cmd[:3] == ["git", "rev-list", "--count"]:
@@ -364,6 +396,8 @@ async def test_publish_draft_prs_uses_override_title_and_body(monkeypatch):
         captured.append(cmd)
         if cmd[:2] == ["git", "symbolic-ref"]:
             return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return 0, "", ""
         if cmd[:3] == ["git", "rev-list", "--count"]:
@@ -400,3 +434,71 @@ async def test_default_branch_falls_back_to_main(monkeypatch):
 
     monkeypatch.setattr(pr_mod, "_run", fake_run)
     assert await pr_mod._default_branch(Path("/tmp/anywhere")) == "main"
+
+
+@pytest.mark.asyncio
+async def test_publish_fetches_origin_base_before_counting_commits(monkeypatch):
+    """Regression: a stale local ``origin/{base}`` ref used to make rev-list
+    over-count and produce empty-diff PRs. ``publish_draft_prs`` must run
+    ``git fetch origin {base}`` from the worktree before the count."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    captured: list[list[str]] = []
+
+    async def fake_run(cmd, cwd=None):
+        captured.append(cmd)
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return 0, "1", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/9", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_one_repo())
+    assert results[0].error is None
+
+    fetch_calls = [c for c in captured if c[:2] == ["git", "fetch"]]
+    assert fetch_calls == [["git", "fetch", "origin", "main"]]
+
+    # Fetch must precede the rev-list count, otherwise the stale-ref bug
+    # this guards against can sneak back in.
+    fetch_idx = next(i for i, c in enumerate(captured) if c[:2] == ["git", "fetch"])
+    revlist_idx = next(i for i, c in enumerate(captured) if c[:3] == ["git", "rev-list", "--count"])
+    assert fetch_idx < revlist_idx
+
+
+@pytest.mark.asyncio
+async def test_publish_continues_when_fetch_fails(monkeypatch):
+    """A fetch failure (offline, auth) must not block the PR flow — log and
+    fall through to rev-list, which surfaces the real error if any."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    async def fake_run(cmd, cwd=None):
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 1, "", "Could not resolve host: github.com"
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return 0, "2", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/10", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_one_repo())
+    assert results[0].error is None
+    assert results[0].url == "https://github.com/x/y/pull/10"

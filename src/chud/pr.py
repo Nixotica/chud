@@ -178,7 +178,21 @@ def pick_body(state: SessionState) -> str:
     """Prefer the plan's ``## Context`` section as the body lead, with a
     small footer pointing back to the chud session id. Fall back to the
     prompt-only body when no plan is available.
+
+    When the session is linked to a GitHub issue, prepend a ``Closes #N``
+    line so GitHub auto-populates the Development sidebar — this is the
+    signal the new-session picker reads back via
+    ``Issue.closing_pr_numbers`` to filter the issue out of future picker
+    opens. Users can still strip the line in the PR-review modal if they
+    don't want the auto-close behavior.
     """
+    body = _pick_body_inner(state)
+    if state.issue_number is not None:
+        return f"Closes #{state.issue_number}\n\n{body}"
+    return body
+
+
+def _pick_body_inner(state: SessionState) -> str:
     if state.approved_plan:
         context = _extract_plan_context(state.approved_plan)
         if context:
@@ -234,6 +248,16 @@ async def publish_draft_prs(
                     )
                 )
                 continue
+
+        # Refresh ``origin/{base}`` before counting commits ahead. Without this,
+        # a stale local ref (common when the user hasn't fetched in a while)
+        # makes ``rev-list`` over-count, we push a branch whose tip already
+        # exists on the remote, and ``gh pr create`` opens an empty-diff PR.
+        # Best-effort: a fetch failure (offline, auth) is logged and we fall
+        # through to the existing rev-list, where the real failure surfaces.
+        rc, _, ferr = await _run(["git", "fetch", "origin", base], cwd=worktree)
+        if rc != 0:
+            log.warning("git fetch origin %s failed in %s: %s", base, worktree, ferr.strip())
 
         rc, count, err = await _run(
             ["git", "rev-list", "--count", f"origin/{base}..HEAD"],

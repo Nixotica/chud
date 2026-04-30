@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 from chud.settings import get_branch_prefix, get_include_slug
+from chud.state import worktrees_root
 from chud.types import SessionState, Worktree
 
 log = logging.getLogger(__name__)
@@ -82,14 +82,18 @@ def detect_cwd_repo() -> Path | None:
 
 
 class WorktreeManager:
-    """Per-session manager for the workspace dir and N attached worktrees."""
+    """Per-session manager for N attached worktrees.
+
+    Worktrees land at ``{worktrees_root}/{session_id}-{basename}``, with a
+    ``-2``/``-3``/... suffix when the same basename is attached twice in one
+    session (e.g. two repos named ``api``).
+    """
 
     def __init__(self, session: SessionState) -> None:
         self.session = session
-        self.session.workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def attach_repo(self, repo_path: Path) -> Worktree:
-        """Add a worktree for `repo_path` under the session's workspace.
+        """Add a worktree for `repo_path` under the chud worktrees root.
 
         Idempotent: if the repo is already attached, returns the existing Worktree.
         Disambiguates worktree dir name on basename collision across different repos.
@@ -100,15 +104,17 @@ class WorktreeManager:
         if repo_key in self.session.attached_repos:
             return self.session.attached_repos[repo_key]
 
+        root = worktrees_root()
+        sid = self.session.id
         basename = toplevel.name
-        wt_dir_name = basename
+        wt_basename = basename
         i = 2
         existing_dirs = {wt.worktree_path.name for wt in self.session.attached_repos.values()}
-        while wt_dir_name in existing_dirs:
-            wt_dir_name = f"{basename}-{i}"
+        while f"{sid}-{wt_basename}" in existing_dirs:
+            wt_basename = f"{basename}-{i}"
             i += 1
 
-        worktree_path = self.session.workspace_dir / wt_dir_name
+        worktree_path = root / f"{sid}-{wt_basename}"
         prefix = get_branch_prefix()
         if get_include_slug():
             slug = _slugify(self.session.initial_prompt) or "session"
@@ -169,7 +175,7 @@ class WorktreeManager:
 
         For worktrees where the agent did no work (or where a session was
         cancelled), the ``chud/<slug>-<sid>`` branch ref accumulates in the
-        origin repo with no commits behind it. ``cleanup_workspace`` removes
+        origin repo with no commits behind it. ``cleanup_worktrees`` removes
         the worktree but leaves the branch ref dangling, so call this when
         you know the branch is empty: it force-detaches the worktree (so
         ``git branch -D`` won't complain that it's checked out), then deletes
@@ -193,9 +199,7 @@ class WorktreeManager:
             if "not found" not in stderr.lower():
                 log.warning("git branch -D %s failed in %s: %s", branch, repo_path, stderr)
 
-    def cleanup_workspace(self) -> None:
-        """Remove all attached worktrees and the workspace dir. Destructive."""
+    def cleanup_worktrees(self) -> None:
+        """Remove every attached worktree (force). Destructive."""
         for repo_key in list(self.session.attached_repos):
             self.detach_repo(repo_key, force=True)
-        if self.session.workspace_dir.exists():
-            shutil.rmtree(self.session.workspace_dir, ignore_errors=True)
