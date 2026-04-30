@@ -13,15 +13,13 @@ so PRs read as summaries of *what was done* rather than verbatim user input.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
-import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from chud.gh import _no_prompt_env, _run
 from chud.settings import render_pr_body_footer
 from chud.types import SessionState
 
@@ -30,11 +28,17 @@ log = logging.getLogger(__name__)
 
 _TITLE_LIMIT = 72
 
-# A real GitHub push completes in a few seconds; anything past this is a
-# hang, typically a credential prompt that the TUI's raw-mode terminal
-# can't satisfy. Without this guard, _publish_prs parks forever and the
-# post-DONE CLEANUP_REQUESTED broadcast never fires.
-_RUN_TIMEOUT_S = 60.0
+# Re-exported so existing tests that monkeypatch ``chud.pr._run`` keep
+# working without churn. Internal callers in this module still resolve
+# ``_run`` through the local module dict, which the tests override.
+__all__ = [
+    "PRResult",
+    "_no_prompt_env",
+    "_run",
+    "publish_draft_prs",
+    "pick_title",
+    "pick_body",
+]
 
 
 @dataclass
@@ -44,55 +48,6 @@ class PRResult:
     url: str | None = None
     error: str | None = None
     discarded: bool = False
-
-
-def _no_prompt_env() -> dict[str, str]:
-    """Env that forbids git/ssh from waiting on an interactive credential prompt.
-
-    Without these, ``git push`` inheriting the TUI's TTY can either block on
-    stdin (raw mode swallows the keypresses git expects) or scribble a
-    password prompt onto the screen — both manifest as "TUI got laggy and
-    nothing happened." With them set, git/ssh fail fast with an auth error
-    that surfaces as a PR_FAILED toast.
-    """
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env.setdefault("GIT_ASKPASS", "/bin/true")
-    env.setdefault("SSH_ASKPASS", "/bin/true")
-    env.setdefault("SSH_ASKPASS_REQUIRE", "never")
-    return env
-
-
-async def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
-    """Run a subprocess, returning (returncode, stdout, stderr).
-
-    stdin is wired to /dev/null so git/gh can never read from the parent
-    TTY, and a 60s wall-clock timeout kills any process that still hangs
-    despite that — preserving the invariant that ``_finish_done`` always
-    reaches its CLEANUP_REQUESTED broadcast.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=_no_prompt_env(),
-    )
-    try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=_RUN_TIMEOUT_S)
-    except TimeoutError:
-        log.warning("pr._run timeout after %.0fs: %s", _RUN_TIMEOUT_S, cmd)
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-        return (-1, "", f"timed out after {_RUN_TIMEOUT_S:.0f}s")
-    return (
-        proc.returncode if proc.returncode is not None else -1,
-        out_b.decode(errors="replace").strip(),
-        err_b.decode(errors="replace").strip(),
-    )
 
 
 async def _default_branch(repo_path: Path) -> str:
@@ -223,7 +178,21 @@ def pick_body(state: SessionState) -> str:
     """Prefer the plan's ``## Context`` section as the body lead, with a
     small footer pointing back to the chud session id. Fall back to the
     prompt-only body when no plan is available.
+
+    When the session is linked to a GitHub issue, prepend a ``Closes #N``
+    line so GitHub auto-populates the Development sidebar — this is the
+    signal the new-session picker reads back via
+    ``Issue.closing_pr_numbers`` to filter the issue out of future picker
+    opens. Users can still strip the line in the PR-review modal if they
+    don't want the auto-close behavior.
     """
+    body = _pick_body_inner(state)
+    if state.issue_number is not None:
+        return f"Closes #{state.issue_number}\n\n{body}"
+    return body
+
+
+def _pick_body_inner(state: SessionState) -> str:
     if state.approved_plan:
         context = _extract_plan_context(state.approved_plan)
         if context:
@@ -279,6 +248,16 @@ async def publish_draft_prs(
                     )
                 )
                 continue
+
+        # Refresh ``origin/{base}`` before counting commits ahead. Without this,
+        # a stale local ref (common when the user hasn't fetched in a while)
+        # makes ``rev-list`` over-count, we push a branch whose tip already
+        # exists on the remote, and ``gh pr create`` opens an empty-diff PR.
+        # Best-effort: a fetch failure (offline, auth) is logged and we fall
+        # through to the existing rev-list, where the real failure surfaces.
+        rc, _, ferr = await _run(["git", "fetch", "origin", base], cwd=worktree)
+        if rc != 0:
+            log.warning("git fetch origin %s failed in %s: %s", base, worktree, ferr.strip())
 
         rc, count, err = await _run(
             ["git", "rev-list", "--count", f"origin/{base}..HEAD"],

@@ -15,6 +15,14 @@ from chud.worktree import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_worktrees_root(tmp_path_factory, monkeypatch):
+    """Redirect ``worktrees_root()`` away from the real user data dir."""
+    root = tmp_path_factory.mktemp("wt-root")
+    monkeypatch.setattr("chud.worktree.worktrees_root", lambda: root)
+    return root
+
+
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "-C", str(path), "init", "-b", "main"], check=True, capture_output=True)
@@ -68,16 +76,15 @@ def test_detect_cwd_repo_inside_repo_subdir(tmp_path: Path, monkeypatch: pytest.
     assert detected.resolve() == repo.resolve()
 
 
-def test_attach_repo_creates_worktree(tmp_path: Path):
+def test_attach_repo_creates_worktree(tmp_path: Path, _isolated_worktrees_root: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    workspace = tmp_path / "ws"
-    session = SessionState(id="sess1", workspace_dir=workspace, initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt = mgr.attach_repo(repo)
 
-    assert wt.worktree_path == workspace / "myrepo"
+    assert wt.worktree_path == _isolated_worktrees_root / "sess1-myrepo"
     assert wt.worktree_path.exists()
     assert (wt.worktree_path / "README").read_text() == "hi"
     assert wt.branch == "chud/add-foo-sess1"
@@ -86,7 +93,7 @@ def test_attach_repo_creates_worktree(tmp_path: Path):
 def test_attach_repo_idempotent(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt1 = mgr.attach_repo(repo)
@@ -100,14 +107,14 @@ def test_attach_two_repos_same_basename_disambiguated(tmp_path: Path):
     b = tmp_path / "org-b" / "api"
     _init_repo(a)
     _init_repo(b)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt_a = mgr.attach_repo(a)
     wt_b = mgr.attach_repo(b)
 
-    assert wt_a.worktree_path.name == "api"
-    assert wt_b.worktree_path.name == "api-2"
+    assert wt_a.worktree_path.name == "sess1-api"
+    assert wt_b.worktree_path.name == "sess1-api-2"
     assert wt_a.worktree_path.exists()
     assert wt_b.worktree_path.exists()
 
@@ -116,7 +123,7 @@ def test_attach_repo_branch_falls_back_when_prompt_empty(tmp_path: Path):
     """Empty prompt → branch uses the ``session`` literal as the slug."""
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="")
+    session = SessionState(id="sess1", initial_prompt="")
     mgr = WorktreeManager(session)
 
     wt = mgr.attach_repo(repo)
@@ -133,7 +140,7 @@ def test_attach_repo_branch_uses_configured_prefix(tmp_path: Path, monkeypatch):
 
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
 
     wt = mgr.attach_repo(repo)
@@ -152,7 +159,6 @@ def test_attach_repo_branch_omits_slug_when_disabled(tmp_path: Path, monkeypatch
     _init_repo(repo)
     session = SessionState(
         id="sess1",
-        workspace_dir=tmp_path / "ws",
         initial_prompt="some prompt that would normally slug",
     )
     mgr = WorktreeManager(session)
@@ -167,7 +173,6 @@ def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
     _init_repo(repo)
     session = SessionState(
         id="sess1",
-        workspace_dir=tmp_path / "ws",
         initial_prompt="Fix bug: 🚀 in API!",
     )
     mgr = WorktreeManager(session)
@@ -180,7 +185,7 @@ def test_attach_repo_branch_handles_unicode_and_punctuation(tmp_path: Path):
 def test_detach_repo_removes_worktree(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
@@ -193,7 +198,7 @@ def test_detach_repo_removes_worktree(tmp_path: Path):
 def test_detach_repo_with_dirty_worktree_requires_force(tmp_path: Path):
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     (wt.worktree_path / "dirty.txt").write_text("uncommitted")
@@ -209,7 +214,7 @@ def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
     """Empty branch → worktree gone + ``chud/...`` branch ref deleted in origin."""
     repo = tmp_path / "myrepo"
     _init_repo(repo)
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
@@ -238,9 +243,9 @@ def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
     assert str(repo) not in session.attached_repos
 
 
-def test_discard_empty_branch_no_op_for_unknown_repo(tmp_path: Path):
+def test_discard_empty_branch_no_op_for_unknown_repo():
     """Discarding a repo that isn't attached is a silent no-op."""
-    session = SessionState(id="sess1", workspace_dir=tmp_path / "ws", initial_prompt="add foo")
+    session = SessionState(id="sess1", initial_prompt="add foo")
     mgr = WorktreeManager(session)
     # Should not raise.
     mgr.discard_empty_branch("/does/not/exist")

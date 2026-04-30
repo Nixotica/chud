@@ -21,7 +21,7 @@ class CleanupConfirmationModal(ModalScreen[bool]):
       that lists the PR URL(s).
 
     Returns True on confirm, False on cancel/escape. The caller is responsible
-    for actually invoking ``manager.kill_session(..., cleanup_workspace=True)``
+    for actually invoking ``manager.kill_session(..., cleanup_worktrees=True)``
     and removing the row from the sidebar.
     """
 
@@ -96,8 +96,7 @@ class CleanupConfirmationModal(ModalScreen[bool]):
                 repo = pr.get("repo") or "(repo)"
                 url = pr.get("url") or ""
                 yield Static(f"  • [cyan]{repo}[/cyan] → [green]{url}[/green]")
-            yield Static("\nRemoving the workspace and worktrees:")
-            yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
+            yield Static("\nRemoving the worktrees:")
             if self.state.attached_repos:
                 for wt in self.state.attached_repos.values():
                     yield Static(
@@ -113,11 +112,7 @@ class CleanupConfirmationModal(ModalScreen[bool]):
             id="title",
         )
         with VerticalScroll():
-            yield Static(
-                "This will [red]permanently delete[/red] the workspace "
-                "directory and remove all attached worktrees:"
-            )
-            yield Static(f"  • workspace: [yellow]{self.state.workspace_dir}[/yellow]")
+            yield Static("This will [red]permanently delete[/red] every attached worktree:")
             if self.state.attached_repos:
                 for wt in self.state.attached_repos.values():
                     yield Static(

@@ -1,10 +1,10 @@
 """Tests for AgentSession.start() cwd derivation.
 
-Regression: agents used to launch with cwd=workspace_dir (the parent of the
-worktree) instead of the worktree path itself, which made them edit the source
+Regression: agents used to launch with cwd pointing at the parent of the
+worktree instead of the worktree path itself, which made them edit the source
 repo instead of the worktree. start() now picks the worktree path when
-exactly one repo is attached, and falls back to workspace_dir for the
-0-repo and ≥2-repo cases.
+exactly one repo is attached, and falls back to ``worktrees_root()`` for the
+0-repo and ≥2-repo cases (when no launch_cwd is provided).
 """
 
 from __future__ import annotations
@@ -51,33 +51,39 @@ def patched_client(monkeypatch):
     return _CapturingClient
 
 
-def _state(workspace: Path, repos: list[Worktree] | None = None) -> SessionState:
-    st = SessionState(id="t1", workspace_dir=workspace)
+@pytest.fixture
+def isolated_root(tmp_path: Path, monkeypatch):
+    root = tmp_path / "wt-root"
+    root.mkdir()
+    monkeypatch.setattr("chud.session.worktrees_root", lambda: root)
+    return root
+
+
+def _state(repos: list[Worktree] | None = None) -> SessionState:
+    st = SessionState(id="t1")
     for wt in repos or []:
         st.attached_repos[str(wt.repo_path)] = wt
     return st
 
 
-async def test_start_with_no_repos_uses_workspace_dir(tmp_path, patched_client):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    sess = AgentSession(_state(workspace))
+async def test_start_with_no_repos_falls_back_to_worktrees_root(
+    patched_client, isolated_root: Path
+):
+    sess = AgentSession(_state())
     try:
         await sess.start("hello")
-        assert patched_client.last_options.cwd == workspace
+        assert patched_client.last_options.cwd == isolated_root
     finally:
         await sess.stop()
 
 
 async def test_start_with_single_repo_uses_worktree_path(tmp_path, patched_client):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
     repo = tmp_path / "src"
-    wt_path = workspace / "src"
+    wt_path = tmp_path / "wt"
     wt_path.mkdir()
     wt = Worktree(repo_path=repo, worktree_path=wt_path, branch="chud/x-t1")
 
-    sess = AgentSession(_state(workspace, [wt]))
+    sess = AgentSession(_state([wt]))
     try:
         await sess.start("hello")
         assert patched_client.last_options.cwd == wt_path
@@ -85,10 +91,9 @@ async def test_start_with_single_repo_uses_worktree_path(tmp_path, patched_clien
         await sess.stop()
 
 
-async def test_start_forwards_effort_to_sdk_options(tmp_path, patched_client):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    sess = AgentSession(_state(workspace), effort="high")
+async def test_start_forwards_effort_to_sdk_options(patched_client, isolated_root: Path):
+    del isolated_root
+    sess = AgentSession(_state(), effort="high")
     try:
         await sess.start("hello")
         assert patched_client.last_options.effort == "high"
@@ -96,10 +101,9 @@ async def test_start_forwards_effort_to_sdk_options(tmp_path, patched_client):
         await sess.stop()
 
 
-async def test_start_with_no_effort_passes_none(tmp_path, patched_client):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    sess = AgentSession(_state(workspace))
+async def test_start_with_no_effort_passes_none(patched_client, isolated_root: Path):
+    del isolated_root
+    sess = AgentSession(_state())
     try:
         await sess.start("hello")
         assert patched_client.last_options.effort is None
@@ -107,22 +111,22 @@ async def test_start_with_no_effort_passes_none(tmp_path, patched_client):
         await sess.stop()
 
 
-async def test_start_with_two_repos_uses_workspace_dir(tmp_path, patched_client):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+async def test_start_with_two_repos_falls_back_to_worktrees_root(
+    tmp_path, patched_client, isolated_root: Path
+):
     wt1 = Worktree(
         repo_path=tmp_path / "a",
-        worktree_path=workspace / "a",
+        worktree_path=isolated_root / "t1-a",
         branch="chud/x-t1",
     )
     wt2 = Worktree(
         repo_path=tmp_path / "b",
-        worktree_path=workspace / "b",
+        worktree_path=isolated_root / "t1-b",
         branch="chud/x-t1",
     )
-    sess = AgentSession(_state(workspace, [wt1, wt2]))
+    sess = AgentSession(_state([wt1, wt2]))
     try:
         await sess.start("hello")
-        assert patched_client.last_options.cwd == workspace
+        assert patched_client.last_options.cwd == isolated_root
     finally:
         await sess.stop()
