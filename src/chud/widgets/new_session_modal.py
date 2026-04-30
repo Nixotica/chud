@@ -181,53 +181,53 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
             body.can_focus = False
             with body:
                 yield Label("Initial prompt:")
-                    yield TextArea("", id="prompt")
-                    if self._has_issue_picker:
-                        yield Label("Link GitHub issue (optional):")
-                        issue_choices = tuple(
-                            (f"#{i.number} — {i.title}", str(i.number)) for i in self._issues
-                        )
-                        yield Select(
-                            issue_choices,
-                            id="issue",
-                            allow_blank=True,
-                            prompt="(none — start without an issue)",
-                            tooltip=(
-                                "Optionally pre-load a GitHub issue's title, URL, and body "
-                                "into the agent's initial prompt. The text you typed above "
-                                "is appended after a `---` separator."
-                            ),
-                        )
-                    defaults = user_default_options()
-                    with VerticalScroll(id="options-group"):
-                        yield Label("Options")
-                        for opt in SESSION_OPTIONS:
-                            yield Checkbox(
-                                opt.label,
-                                value=defaults[opt.id],
-                                id=f"opt-{opt.id}",
-                                tooltip=opt.description,
-                            )
-                    yield Label("Effort:")
-                    default_effort = user_default_effort() or claude_settings_effort()
-                    choices = tuple(
-                        (f"{label} (default)" if value == default_effort else label, value)
-                        for label, value in _EFFORT_CHOICES
+                yield TextArea("", id="prompt")
+                if self._has_issue_picker:
+                    yield Label("Link GitHub issue (optional):")
+                    issue_choices = tuple(
+                        (f"#{i.number} — {i.title}", str(i.number)) for i in self._issues
                     )
-                    tooltip = (
-                        "Reasoning effort hint for the agent. "
-                        "Default leaves it to the SDK; higher values trade speed for thoroughness."
+                    yield Select(
+                        issue_choices,
+                        id="issue",
+                        allow_blank=True,
+                        prompt="(none — start without an issue)",
+                        tooltip=(
+                            "Optionally pre-load a GitHub issue's title, URL, and body "
+                            "into the agent's initial prompt. The text you typed above "
+                            "is appended after a `---` separator."
+                        ),
                     )
-                    if default_effort is None:
-                        yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
-                    else:
-                        yield Select(
-                            choices,
-                            id=KEY_EFFORT,
-                            allow_blank=False,
-                            value=default_effort,
-                            tooltip=tooltip,
+                defaults = user_default_options()
+                with VerticalScroll(id="options-group"):
+                    yield Label("Options")
+                    for opt in SESSION_OPTIONS:
+                        yield Checkbox(
+                            opt.label,
+                            value=defaults[opt.id],
+                            id=f"opt-{opt.id}",
+                            tooltip=opt.description,
                         )
+                yield Label("Effort:")
+                default_effort = user_default_effort() or claude_settings_effort()
+                choices = tuple(
+                    (f"{label} (default)" if value == default_effort else label, value)
+                    for label, value in _EFFORT_CHOICES
+                )
+                tooltip = (
+                    "Reasoning effort hint for the agent. "
+                    "Default leaves it to the SDK; higher values trade speed for thoroughness."
+                )
+                if default_effort is None:
+                    yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
+                else:
+                    yield Select(
+                        choices,
+                        id=KEY_EFFORT,
+                        allow_blank=False,
+                        value=default_effort,
+                        tooltip=tooltip,
+                    )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Start (F2)", id="start", variant="success")
@@ -297,21 +297,6 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
 
     def action_start(self) -> None:
         self._submit()
-
-    def _read_issue(self) -> Issue | None:
-        """Resolve the ``Select#issue`` value to an ``Issue``, or ``None``.
-
-        ``Select.value`` returns the ``BLANK`` sentinel (not a ``str``) when
-        the user hasn't picked anything, which collapses to ``None`` here.
-        Otherwise we look up the matching issue by number — comparing as
-        strings since ``Select`` round-trips option values verbatim.
-        """
-        if not self._has_issue_picker:
-            return None
-        raw = self.query_one("#issue", Select).value
-        if not isinstance(raw, str):
-            return None
-        return next((i for i in self._issues if str(i.number) == raw), None)
 
     def _read_issue(self) -> Issue | None:
         """Resolve the ``Select#issue`` value to an ``Issue``, or ``None``.
