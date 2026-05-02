@@ -18,6 +18,7 @@ from chud.state import (
     user_default_options,
 )
 from chud.types import KEY_EFFORT
+from chud.widgets.check_mark_toggles import CheckMarkBox
 
 _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
 
@@ -26,7 +27,6 @@ _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v i
 # text — Textual's Select renders option labels through Rich markup, so
 # ``[…]`` would be eaten as a tag.
 ACTIVE_CHUD_ICON = "⚙"
-from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
 @dataclass
@@ -66,6 +66,11 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         background: $surface;
         border: round $accent;
         padding: 1 2;
+    }
+    NewSessionModal #body {
+        height: 1fr;
+        margin-top: 1;
+        margin-bottom: 1;
     }
     NewSessionModal Label {
         height: 1;
@@ -170,54 +175,67 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("[bold]New session[/bold]")
-            if self._has_issue_picker:
-                yield Label("Link GitHub issue (optional):")
-                issue_choices = tuple(
-                    (self._format_issue_label(i), str(i.number)) for i in self._issues
-                )
-                yield Select(
-                    issue_choices,
-                    id="issue",
-                    allow_blank=True,
-                    prompt="(none — start without an issue)",
-                    tooltip=(
-                        "Pick a GitHub issue to pre-populate the prompt with its "
-                        "title, URL, and body. You can edit the text afterwards "
-                        "to add extra context before submitting."
-                    ),
-                )
-            yield Label("Initial prompt:")
-            yield TextArea("", id="prompt")
-            defaults = user_default_options()
-            with VerticalScroll(id="options-group"):
-                yield Label("Options")
-                for opt in SESSION_OPTIONS:
-                    yield CheckMarkBox(
-                        opt.label,
-                        value=defaults[opt.id],
-                        id=f"opt-{opt.id}",
-                        tooltip=opt.description,
+            body = VerticalScroll(id="body")
+            # Let inner widgets own focus — matches QuestionModal's pattern so
+            # tab-cycling lands on the prompt/options/effort controls rather
+            # than the scroll container itself.
+            body.can_focus = False
+            with body:
+                yield Label("Initial prompt:")
+                yield TextArea("", id="prompt")
+                if self._has_issue_picker:
+                    yield Label("Link GitHub issue (optional):")
+                    issue_choices = tuple(
+                        (self._format_issue_label(i), str(i.number)) for i in self._issues
                     )
-            yield Label("Effort:")
-            default_effort = user_default_effort() or claude_settings_effort()
-            choices = tuple(
-                (f"{label} (default)" if value == default_effort else label, value)
-                for label, value in _EFFORT_CHOICES
-            )
-            tooltip = (
-                "Reasoning effort hint for the agent. "
-                "Default leaves it to the SDK; higher values trade speed for thoroughness."
-            )
-            if default_effort is None:
-                yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
-            else:
-                yield Select(
-                    choices,
-                    id=KEY_EFFORT,
-                    allow_blank=False,
-                    value=default_effort,
-                    tooltip=tooltip,
+                    yield Select(
+                        issue_choices,
+                        id="issue",
+                        allow_blank=True,
+                        prompt="(none — start without an issue)",
+                        tooltip=(
+                            "Optionally pre-load a GitHub issue's title, URL, and body "
+                            "into the agent's initial prompt. The text you typed above "
+                            "is appended after a `---` separator."
+                        ),
+                    )
+                defaults = user_default_options()
+                # ``VerticalScroll`` is focusable by default; that adds a
+                # spurious tab stop between the prompt and the first checkbox.
+                # Disable focus on the container itself (mirrors the outer
+                # ``body`` scroll above); a focused checkbox inside still
+                # scrolls the parent into view.
+                options_scroll = VerticalScroll(id="options-group")
+                options_scroll.can_focus = False
+                with options_scroll:
+                    yield Label("Options")
+                    for opt in SESSION_OPTIONS:
+                        yield CheckMarkBox(
+                            opt.label,
+                            value=defaults[opt.id],
+                            id=f"opt-{opt.id}",
+                            tooltip=opt.description,
+                        )
+                yield Label("Effort:")
+                default_effort = user_default_effort() or claude_settings_effort()
+                choices = tuple(
+                    (f"{label} (default)" if value == default_effort else label, value)
+                    for label, value in _EFFORT_CHOICES
                 )
+                tooltip = (
+                    "Reasoning effort hint for the agent. "
+                    "Default leaves it to the SDK; higher values trade speed for thoroughness."
+                )
+                if default_effort is None:
+                    yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
+                else:
+                    yield Select(
+                        choices,
+                        id=KEY_EFFORT,
+                        allow_blank=False,
+                        value=default_effort,
+                        tooltip=tooltip,
+                    )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Start (F2)", id="start", variant="success")

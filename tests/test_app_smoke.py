@@ -20,7 +20,6 @@ from chud import gh as gh_mod
 from chud.app import ChudApp
 from chud.gh import Issue
 from chud.types import Event, EventKind, SessionState, SessionStatus, Worktree
-from chud.widgets.attach_repo_modal import AttachRepoModal
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import (
     ACTIVE_CHUD_ICON,
@@ -28,6 +27,7 @@ from chud.widgets.new_session_modal import (
     NewSessionResult,
 )
 from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.question_modal import QuestionModal, _CheckMarkRadio
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
@@ -61,7 +61,6 @@ async def test_session_list_renders_in_every_status():
         for i, status in enumerate(SessionStatus):
             st = SessionState(
                 id=f"sess{i:04d}",
-                workspace_dir=Path("/tmp"),
                 status=status,
                 initial_prompt=f"prompt for {status.value}",
             )
@@ -79,7 +78,7 @@ async def test_session_list_update_renders_after_status_change():
     async with app.run_test() as pilot:
         await pilot.pause()
         slv = app.query_one(SessionListView)
-        st = SessionState(id="sess1", workspace_dir=Path("/tmp"), initial_prompt="hi")
+        st = SessionState(id="sess1", initial_prompt="hi")
         slv.add_session(st)
         await pilot.pause()
 
@@ -103,7 +102,6 @@ async def test_session_list_long_prompt_truncates_without_error():
         slv = app.query_one(SessionListView)
         st = SessionState(
             id="long",
-            workspace_dir=Path("/tmp"),
             initial_prompt="x" * 500 + "\nsecond line should be ignored",
         )
         slv.add_session(st)
@@ -117,7 +115,7 @@ async def test_session_view_renders_every_event_kind():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="sv1", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="sv1", initial_prompt="p")
         st.attached_repos["r"] = Worktree(
             repo_path=Path("/tmp/repo"),
             worktree_path=Path("/tmp/wt"),
@@ -166,7 +164,7 @@ async def test_session_view_escapes_bracket_payloads():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        view.show_session(SessionState(id="x", workspace_dir=Path("/tmp")))
+        view.show_session(SessionState(id="x"))
         await pilot.pause()
 
         # Each of these payloads contains content that would break a markup parser
@@ -211,7 +209,7 @@ async def test_session_view_escape_moves_focus_off_input():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="esc1", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="esc1", initial_prompt="p")
         view.show_session(st)
         await pilot.pause()
         view.input.focus()
@@ -240,7 +238,7 @@ async def test_session_view_show_session_clears_and_disables_input():
     async with app.run_test() as pilot:
         await pilot.pause()
         view = app.query_one(SessionView)
-        st = SessionState(id="x", workspace_dir=Path("/tmp"), initial_prompt="p")
+        st = SessionState(id="x", initial_prompt="p")
         view.show_session(st)
         await pilot.pause()
         assert not view.input.disabled
@@ -288,15 +286,6 @@ async def test_new_session_modal_options_render_checkmark_glyph():
         await pilot.pause()
         on_render = str(box._button)
         assert "✓" in on_render and "X" not in on_render
-
-
-async def test_attach_repo_modal_mounts_and_renders():
-    app = ChudApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.push_screen(AttachRepoModal())
-        await pilot.pause()
-        _force_render(app.screen)
 
 
 async def test_plan_modal_mounts_and_renders_long_plan():
@@ -397,6 +386,131 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
         assert result == [False]
 
 
+_LONG_QUESTION_BODY = (
+    "We are about to refactor the renderer to better support cross-repo session "
+    "orchestration; this will touch the worktree manager, the session state machine, "
+    "the persistence layer, and a handful of widgets in the TUI — before we proceed, "
+    "can you confirm whether you would like the migration to preserve existing "
+    "on-disk session metadata, drop and recreate it on first launch, or attempt a "
+    "best-effort upgrade with a rollback path that keeps the previous JSON files "
+    "under sessions.json.bak so a downgrade is possible without manual cleanup?"
+)
+
+
+_LONG_OPTION_LABEL = (
+    "Best-effort upgrade with rollback that keeps the previous JSON files "
+    "under sessions.json.bak so a downgrade is possible without manual cleanup"
+)
+_LONG_OPTION_DESCRIPTION = (
+    "Reads each legacy record, applies a per-field migration, and writes the new "
+    "shape atomically; on any failure during migration the .bak files are restored "
+    "in place. Most operationally safe but the most code to maintain."
+)
+
+
+def _question_modal_payload() -> dict:
+    """Payload mixing a long-body question with both short and long options."""
+    return {
+        "questions": [
+            {
+                "header": "Long question",
+                "question": _LONG_QUESTION_BODY,
+                "multiSelect": False,
+                "options": [
+                    {"label": "Preserve metadata"},
+                    {"label": "Drop and recreate"},
+                    {
+                        "label": _LONG_OPTION_LABEL,
+                        "description": _LONG_OPTION_DESCRIPTION,
+                    },
+                ],
+            },
+            {
+                "header": "Notes",
+                "question": "Anything else the agent should know?",
+                "multiSelect": False,
+            },
+        ]
+    }
+
+
+async def test_question_modal_mounts_and_renders_long_question():
+    """Long question body must render without crashing the strip pipeline.
+
+    Question bodies wrap naturally now (no expand toggle); long options
+    carry the ``(→)`` expand hint, short ones don't.
+    """
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        _force_render(modal)
+        radios = list(modal.query(_CheckMarkRadio))
+        assert radios, "expected radio options to be mounted"
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        short_radio = next(r for r in radios if r._option_label == "Preserve metadata")
+        assert long_radio.is_long is True
+        assert short_radio.is_long is False
+        assert "(→)" in long_radio.label.plain
+        assert "(→)" not in short_radio.label.plain
+
+
+async def test_question_modal_right_arrow_expands_focused_option():
+    """Pressing → on the focused (long) option expands it to multi-line."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        # Move the radio highlight onto the long option (third entry).
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is True
+        plain = long_radio.label.plain
+        assert "(← collapse)" in plain
+        assert _LONG_OPTION_DESCRIPTION in plain
+        _force_render(modal)
+
+
+async def test_question_modal_left_arrow_collapses_focused_option():
+    """After expanding the focused long option, ← collapses it back."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("left")
+        await pilot.pause()
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is False
+        assert "(→)" in long_radio.label.plain
+        _force_render(modal)
+
+
 def _cleanup_modal_text(modal: CleanupConfirmationModal) -> str:
     """Concatenate every Static's rendered text inside the modal.
 
@@ -418,7 +532,6 @@ async def test_cleanup_modal_unpublished_shows_destructive_copy():
         await pilot.pause()
         state = SessionState(
             id="sess1234",
-            workspace_dir=Path("/tmp/ws"),
             initial_prompt="do thing",
         )
         modal = CleanupConfirmationModal(state=state)
@@ -438,7 +551,6 @@ async def test_cleanup_modal_published_swaps_to_success_copy():
         await pilot.pause()
         state = SessionState(
             id="sess5678",
-            workspace_dir=Path("/tmp/ws"),
             initial_prompt="do thing",
         )
         modal = CleanupConfirmationModal(
@@ -578,7 +690,6 @@ async def test_app_active_sessions_by_issue_skips_terminal_states():
         def _stub(sid: str, issue_num: int | None, status: SessionStatus) -> Any:
             state = SessionState(
                 id=sid,
-                workspace_dir=Path(f"/tmp/{sid}"),
                 issue_number=issue_num,
             )
             state.status = status
@@ -686,7 +797,6 @@ async def test_new_session_flow_passes_modal_prompt_through_for_issue(monkeypatc
             captured["repo_path"] = repo_path
             state = SessionState(
                 id="sessISSUE",
-                workspace_dir=Path("/tmp/ws"),
                 initial_prompt=prompt,
             )
             return SimpleNamespace(state=state)
@@ -751,7 +861,6 @@ async def test_new_session_flow_no_issue_passes_prompt_verbatim(monkeypatch):
             return SimpleNamespace(
                 state=SessionState(
                     id="sessNO",
-                    workspace_dir=Path("/tmp/ws"),
                     initial_prompt=prompt,
                 )
             )

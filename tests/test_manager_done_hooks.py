@@ -22,14 +22,13 @@ from chud.worktree import WorktreeManager
 
 
 def _make_session(options: dict[str, bool], tmp_path: Path) -> AgentSession:
+    del tmp_path
     state = SessionState(
         id="sess-test",
-        workspace_dir=tmp_path / "ws",
         status=SessionStatus.DONE,
         initial_prompt="do the thing",
         options=options,
     )
-    state.workspace_dir.mkdir(parents=True, exist_ok=True)
     return AgentSession(state, model=None)
 
 
@@ -208,7 +207,7 @@ async def test_done_handled_only_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_kill_session_with_cleanup_workspace_calls_worktree_cleanup(tmp_path, monkeypatch):
+async def test_kill_session_with_cleanup_worktrees_calls_worktree_cleanup(tmp_path, monkeypatch):
     mgr = SessionManager()
     sess = _make_session({}, tmp_path)
     mgr.sessions[sess.state.id] = sess
@@ -219,7 +218,7 @@ async def test_kill_session_with_cleanup_workspace_calls_worktree_cleanup(tmp_pa
     cleanup_calls: list[str] = []
     monkeypatch.setattr(
         wt_mgr,
-        "cleanup_workspace",
+        "cleanup_worktrees",
         lambda: cleanup_calls.append(sess.state.id),
     )
 
@@ -229,7 +228,7 @@ async def test_kill_session_with_cleanup_workspace_calls_worktree_cleanup(tmp_pa
 
     monkeypatch.setattr(sess, "stop", noop_stop)
 
-    await mgr.kill_session(sess.state.id, cleanup_workspace=True)
+    await mgr.kill_session(sess.state.id, cleanup_worktrees=True)
 
     assert cleanup_calls == [sess.state.id]
     assert sess.state.id not in mgr.sessions
@@ -246,7 +245,7 @@ async def test_kill_session_default_does_not_cleanup(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "_persist", lambda: None)
 
     cleanup_calls: list[str] = []
-    monkeypatch.setattr(wt_mgr, "cleanup_workspace", lambda: cleanup_calls.append("nope"))
+    monkeypatch.setattr(wt_mgr, "cleanup_worktrees", lambda: cleanup_calls.append("nope"))
 
     async def noop_stop():
         pass

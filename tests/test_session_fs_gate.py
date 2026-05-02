@@ -29,9 +29,8 @@ def _make_session(
     status: SessionStatus = SessionStatus.EXECUTING,
     repos: dict[str, Worktree] | None = None,
 ) -> AgentSession:
-    workspace = tmp_path / "ws"
-    workspace.mkdir(exist_ok=True)
-    state = SessionState(id="t-fs-gate", workspace_dir=workspace)
+    del tmp_path
+    state = SessionState(id="t-fs-gate")
     state.status = status
     if repos:
         state.attached_repos = repos

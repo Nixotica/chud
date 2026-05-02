@@ -81,7 +81,6 @@ def make_focus_input_hook(seed_path: Path | None) -> DevHook:
 
         st = SessionState(
             id="dev-focus",
-            workspace_dir=Path("/tmp/chud-dev-focus"),
             status=SessionStatus.EXECUTING,
             initial_prompt="dev: focus-input scenario",
         )
