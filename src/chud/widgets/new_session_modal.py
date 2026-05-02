@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
 from chud.gh import Issue, build_issue_prompt
@@ -18,6 +17,7 @@ from chud.state import (
     user_default_options,
 )
 from chud.types import KEY_EFFORT
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
 
@@ -36,7 +36,7 @@ class NewSessionResult:
     issue: Issue | None = None
 
 
-class NewSessionModal(ModalScreen[NewSessionResult | None]):
+class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
     """Prompt the user for an initial prompt + options for a new session.
 
     The repo to attach is derived automatically from chud's launch directory
@@ -170,6 +170,12 @@ class NewSessionModal(ModalScreen[NewSessionResult | None]):
         if len(active) == 1:
             return f"{ACTIVE_CHUD_ICON} {base}"
         return f"{ACTIVE_CHUD_ICON}×{len(active)} {base}"
+
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one("#body", VerticalScroll)
+        except Exception:
+            return None
 
     def compose(self) -> ComposeResult:
         with Vertical():

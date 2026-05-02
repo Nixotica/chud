@@ -10,10 +10,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.geometry import Size
-from textual.screen import ModalScreen
 from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
+
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
 def _toggle_button_with_off_glyph(self: Checkbox | RadioButton, inner_off: str) -> Content:
@@ -179,7 +180,7 @@ class _CheckMarkRadio(_ExpandableOption, RadioButton):
         return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
-class QuestionModal(ModalScreen[str | None]):
+class QuestionModal(ScrollableModalScreen[str | None]):
     """Render an AskUserQuestion tool call and collect the user's answer."""
 
     DEFAULT_CSS = """
@@ -291,6 +292,12 @@ class QuestionModal(ModalScreen[str | None]):
                     "_raw": json.dumps(question_input, default=str, indent=2),
                 }
             ]
+
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one(VerticalScroll)
+        except Exception:
+            return None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -482,18 +489,18 @@ class QuestionModal(ModalScreen[str | None]):
         if focused is None or isinstance(focused, Input):
             return
 
-        if event.key in ("right", "left"):
+        if event.key in ("right", "left", "l", "h"):
             target = self._focused_option()
             if target is None or not target.is_long:
                 return
-            expand = event.key == "right"
+            expand = event.key in ("right", "l")
             if target._expanded != expand:
                 target.set_expanded(expand)
                 event.stop()
                 event.prevent_default()
             return
 
-        if event.key in ("up", "down") and isinstance(focused, Checkbox):
+        if event.key in ("up", "down", "j", "k") and isinstance(focused, Checkbox):
             wid = focused.id or ""
             if "-opt" not in wid:
                 return
@@ -506,7 +513,7 @@ class QuestionModal(ModalScreen[str | None]):
             count = len(q.get("options") or [])
             event.stop()
             event.prevent_default()
-            if event.key == "down":
+            if event.key in ("down", "j"):
                 if opt_idx + 1 < count:
                     with contextlib.suppress(Exception):
                         self.query_one(f"#q{q_idx}-opt{opt_idx + 1}", Checkbox).focus()

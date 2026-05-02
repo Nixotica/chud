@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from chud.types import SessionState
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
-class CleanupConfirmationModal(ModalScreen[bool]):
+class CleanupConfirmationModal(ScrollableModalScreen[bool]):
     """Confirm cleanup of a finished session.
 
     Two visual modes, selected by ``published_prs``:
@@ -71,6 +71,12 @@ class CleanupConfirmationModal(ModalScreen[bool]):
         super().__init__()
         self.state = state
         self.published_prs = list(published_prs or [])
+
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one(VerticalScroll)
+        except Exception:
+            return None
 
     def compose(self) -> ComposeResult:
         with Vertical():

@@ -921,3 +921,125 @@ async def test_new_session_flow_gh_unavailable_skips_list(monkeypatch):
         assert list_calls == []
         assert len(modals_seen) == 1
         assert not modals_seen[0]._has_issue_picker
+
+
+# --- Vim-style scroll bindings (issue #50) -----------------------------------
+
+
+async def test_app_x_key_kills_selected_session(monkeypatch):
+    """`x` is the kill-session shortcut (rebound from `k` to free `k` for scroll)."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        called: list[str | None] = []
+
+        async def fake_kill(self) -> None:
+            called.append(self._selected_session_id)
+
+        monkeypatch.setattr(ChudApp, "action_kill_session", fake_kill, raising=True)
+        await pilot.press("x")
+        await pilot.pause()
+        assert called == [None]
+
+
+async def test_j_k_scroll_transcript_when_focused():
+    """`j`/`k` drive the transcript's scroll position when it owns focus."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        st = SessionState(id="scroll1", initial_prompt="p")
+        view.show_session(st)
+        # Pump enough lines to make the RichLog scrollable.
+        for i in range(200):
+            view.transcript.write(f"line {i}")
+        await pilot.pause()
+        view.transcript.focus()
+        await pilot.pause()
+        # Start at the bottom (auto_scroll=True).
+        bottom_y = view.transcript.scroll_y
+        assert bottom_y > 0
+        await pilot.press("k")
+        await pilot.pause()
+        assert view.transcript.scroll_y < bottom_y
+
+
+async def test_j_k_in_input_inserts_literal_characters():
+    """While the message Input has focus, `j`/`k` are typed, not consumed as scroll."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        st = SessionState(id="typing", initial_prompt="p")
+        view.show_session(st)
+        view.input.focus()
+        await pilot.pause()
+        for ch in "jkj":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert view.input.value == "jkj"
+
+
+async def test_j_k_navigate_session_list():
+    """`j`/`k` move the highlight in the session list, mirroring arrow keys."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        slv = app.query_one(SessionListView)
+        for i in range(3):
+            slv.add_session(SessionState(id=f"sess{i}", initial_prompt="p"))
+        await pilot.pause()
+        slv.list_view.focus()
+        slv.list_view.index = 0
+        await pilot.pause()
+        await pilot.press("j")
+        await pilot.pause()
+        assert slv.list_view.index == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert slv.list_view.index == 0
+
+
+async def test_j_k_scroll_plan_modal():
+    """Inside the plan modal, `j`/`k` scroll its inner VerticalScroll."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        plan = "# Plan\n\n" + "\n".join(f"- step {i}" for i in range(80))
+        app.push_screen(PlanApprovalModal(session_id="abc12345", plan_text=plan))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PlanApprovalModal)
+        container = modal.scroll_container()
+        assert container is not None
+        before = container.scroll_y
+        await pilot.press("j")
+        await pilot.pause()
+        # Either scroll_y advances, or content fit and scroll_target_y stays
+        # zero — but in our 80-step plan the container is definitely overfull.
+        assert container.scroll_target_y > before
+
+
+async def test_question_modal_l_h_expand_collapse_long_option():
+    """`l`/`h` mirror right/left for expand/collapse on the focused long option."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        # Move radio highlight onto the long option (third entry).
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is True
+        await pilot.press("h")
+        await pilot.pause()
+        assert long_radio._expanded is False
