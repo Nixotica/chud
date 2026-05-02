@@ -482,7 +482,9 @@ class QuestionModal(ScrollableModalScreen[str | None]):
         Right/left expand/collapse the *focused* option (or the highlighted
         radio inside a focused RadioSet). Up/down moves between Checkboxes
         in the same multi-select question, falling through to adjacent
-        questions at the boundaries. Inputs keep their own cursor handling
+        questions at the boundaries. j/k mirror up/down for vim-style nav,
+        including inside a focused RadioSet (Textual's RadioSet only binds
+        up/down/left/right natively). Inputs keep their own cursor handling
         because we early-return on ``Input``-focused widgets.
         """
         focused = self.focused
@@ -525,6 +527,39 @@ class QuestionModal(ScrollableModalScreen[str | None]):
                         self.query_one(f"#q{q_idx}-opt{opt_idx - 1}", Checkbox).focus()
                 else:
                     self._retreat_to(q_idx)
+            return
+
+        if event.key in ("up", "down", "j", "k") and isinstance(focused, RadioSet):
+            # RadioSet binds up/down/left/right natively but not j/k, and at
+            # the first/last radio neither set crosses into the adjacent
+            # question. We fill both gaps here so single-select questions
+            # navigate identically to multi-select ones.
+            radios = [c for c in focused.children if isinstance(c, _CheckMarkRadio)]
+            if not radios:
+                return
+            selected = focused._selected if isinstance(focused._selected, int) else 0
+            going_down = event.key in ("down", "j")
+            at_boundary = (going_down and selected >= len(radios) - 1) or (
+                not going_down and selected <= 0
+            )
+            q_idx = self._question_index_of(focused)
+            if at_boundary and q_idx is not None:
+                event.stop()
+                event.prevent_default()
+                if going_down:
+                    self._advance_from(q_idx)
+                else:
+                    self._retreat_to(q_idx)
+                return
+            if event.key in ("j", "k"):
+                event.stop()
+                event.prevent_default()
+                with contextlib.suppress(Exception):
+                    if going_down:
+                        focused.action_next_button()
+                    else:
+                        focused.action_previous_button()
+                return
 
     def _submit(self) -> None:
         parts: list[str] = []
