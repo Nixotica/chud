@@ -21,7 +21,6 @@ import contextlib
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
 from chud.options import SESSION_OPTIONS
@@ -34,9 +33,10 @@ from chud.settings import (
     save_settings,
 )
 from chud.state import load_user_config, save_user_config, user_default_options
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
-class SettingsModal(ModalScreen[bool]):
+class SettingsModal(ScrollableModalScreen[bool]):
     """Edit persistent chud preferences.
 
     Returns ``True`` if the user saved, ``False`` if cancelled / dismissed.
@@ -109,6 +109,12 @@ class SettingsModal(ModalScreen[bool]):
         Binding("escape", "cancel", "Cancel"),
         Binding("f2", "save", "Save", priority=True),
     ]
+
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one("#scroll", VerticalScroll)
+        except Exception:
+            return None
 
     def compose(self) -> ComposeResult:
         snapshot = load_settings()

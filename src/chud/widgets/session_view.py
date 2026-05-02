@@ -34,6 +34,8 @@ class SessionView(Vertical):
 
     BINDINGS = [
         Binding("escape", "focus_transcript", "Focus transcript", show=False),
+        Binding("j", "scroll_transcript_down", show=False),
+        Binding("k", "scroll_transcript_up", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -52,6 +54,12 @@ class SessionView(Vertical):
     @property
     def input(self) -> Input:
         return self.query_one("#input", Input)
+
+    def action_scroll_transcript_down(self) -> None:
+        self.transcript.scroll_down()
+
+    def action_scroll_transcript_up(self) -> None:
+        self.transcript.scroll_up()
 
     def action_focus_transcript(self) -> None:
         """Move focus from the input back up to the transcript.

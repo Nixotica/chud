@@ -10,8 +10,9 @@ from typing import Any, Literal
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
-from textual.widgets import Footer, Header, Input, ListView
+from textual.containers import Horizontal, ScrollableContainer
+from textual.widget import Widget
+from textual.widgets import Footer, Header, Input, ListView, RichLog
 
 from chud import gh as gh_mod
 from chud import state as state_mod
@@ -57,9 +58,15 @@ class ChudApp(App[None]):
 
     BINDINGS = [
         ("n", "new_session", "New session"),
-        ("k", "kill_session", "Kill session"),
+        ("x", "kill_session", "Kill session"),
         ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
+        # Vim-style scroll on the focused pane (transcript / session list).
+        # Textual won't deliver these to the app while a text input owns focus,
+        # so typing `j`/`k` into the message box still inserts the literal
+        # character.
+        ("j", "scroll_focus_down", "Scroll down"),
+        ("k", "scroll_focus_up", "Scroll up"),
     ]
 
     CSS = """
@@ -278,6 +285,35 @@ class ChudApp(App[None]):
         finally:
             self._user_modal_depth -= 1
             self._maybe_show_next_prompt()
+
+    def action_scroll_focus_down(self) -> None:
+        self._scroll_focused(down=True)
+
+    def action_scroll_focus_up(self) -> None:
+        self._scroll_focused(down=False)
+
+    def _scroll_focused(self, *, down: bool) -> None:
+        """Scroll the nearest scrollable ancestor of ``self.focused``.
+
+        For ``ListView`` we move the highlight (which auto-scrolls) so
+        ``j``/``k`` matches the existing arrow-key behaviour. For other
+        scrollables we just nudge ``scroll_y`` by one line.
+        """
+        target: Widget | None = self.focused
+        while target is not None:
+            if isinstance(target, ListView):
+                if down:
+                    target.action_cursor_down()
+                else:
+                    target.action_cursor_up()
+                return
+            if isinstance(target, RichLog | ScrollableContainer):
+                if down:
+                    target.scroll_down()
+                else:
+                    target.scroll_up()
+                return
+            target = target.parent if isinstance(target.parent, Widget) else None
 
     async def action_kill_session(self) -> None:
         sid = self._selected_session_id
