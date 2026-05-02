@@ -9,6 +9,7 @@ from typing import Any
 KEY_REPO_PATH = "repo_path"
 KEY_WORKTREE_PATH = "worktree_path"
 KEY_BRANCH = "branch"
+KEY_START_HEAD = "start_head"
 
 KEY_ID = "id"
 KEY_STATUS = "status"
@@ -39,12 +40,18 @@ class Worktree:
     repo_path: Path
     worktree_path: Path
     branch: str
+    # Worktree HEAD oid captured at creation time. The PR-publish path uses
+    # this as the lower bound for "did this session contribute commits?", so
+    # a session whose branch only carries unrelated commits inherited from a
+    # contaminated parent HEAD doesn't get a draft PR opened against it.
+    start_head: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             KEY_REPO_PATH: str(self.repo_path),
             KEY_WORKTREE_PATH: str(self.worktree_path),
             KEY_BRANCH: self.branch,
+            KEY_START_HEAD: self.start_head,
         }
 
     @classmethod
@@ -53,6 +60,7 @@ class Worktree:
             repo_path=Path(d[KEY_REPO_PATH]),
             worktree_path=Path(d[KEY_WORKTREE_PATH]),
             branch=d[KEY_BRANCH],
+            start_head=d.get(KEY_START_HEAD),
         )
 
 
