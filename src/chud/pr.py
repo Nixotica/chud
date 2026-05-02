@@ -73,6 +73,7 @@ async def _default_branch(repo_path: Path) -> str:
         return out
     return "main"
 
+
 async def _is_dirty(worktree: Path) -> bool:
     """Return True iff ``worktree`` has any tracked changes or untracked files.
 
