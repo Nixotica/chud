@@ -85,19 +85,33 @@ async def _run(
         env=_no_prompt_env(),
     )
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        log.warning("gh._run timeout after %.0fs: %s", timeout, cmd)
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-        return (-1, "", f"timed out after {timeout:.0f}s")
-    return (
-        proc.returncode if proc.returncode is not None else -1,
-        out_b.decode(errors="replace").strip(),
-        err_b.decode(errors="replace").strip(),
-    )
+        try:
+            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError:
+            log.warning("gh._run timeout after %.0fs: %s", timeout, cmd)
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            return (-1, "", f"timed out after {timeout:.0f}s")
+        return (
+            proc.returncode if proc.returncode is not None else -1,
+            out_b.decode(errors="replace").strip(),
+            err_b.decode(errors="replace").strip(),
+        )
+    finally:
+        # asyncio.subprocess.Process.communicate()/wait() don't close the
+        # underlying BaseSubprocessTransport — that only happens when the
+        # Process is GC'd, which may be after our event loop has shut down.
+        # When that race loses we get "RuntimeError: Event loop is closed"
+        # tracebacks from BaseSubprocessTransport.__del__ -> close() trying
+        # to schedule connection_lost on a dead loop. Closing the transport
+        # explicitly here resolves it deterministically while the loop is
+        # still alive. (The attribute is private but stable across CPython.)
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.close()
 
 
 @dataclass(frozen=True)

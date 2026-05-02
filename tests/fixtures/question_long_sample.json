@@ -5,14 +5,46 @@
       "question": "We are about to refactor the renderer to better support cross-repo session orchestration; this will touch the worktree manager, the session state machine, the persistence layer, and a handful of widgets in the TUI — before we proceed, can you confirm whether you would like the migration to preserve existing on-disk session metadata, drop and recreate it on first launch, or attempt a best-effort upgrade with a rollback path that keeps the previous JSON files under sessions.json.bak so a downgrade is possible without manual cleanup, and please also indicate whether the rollback artifact should be retained indefinitely or garbage-collected after a successful run?",
       "multiSelect": false,
       "options": [
-        {"label": "Preserve metadata"},
-        {"label": "Drop and recreate"},
-        {"label": "Best-effort upgrade with rollback"}
+        {
+          "label": "Preserve existing on-disk session metadata exactly as written by the previous version, including any half-completed worktree records and orphaned plan-approval markers",
+          "description": "Keeps every file under ~/.local/share/chud/ untouched on first launch after the upgrade, so a downgrade is trivially a matter of reinstalling the older release; the trade-off is that any schema drift introduced by the refactor will surface as runtime KeyError or ValidationError noise the first time a stale record is read, and we will need a follow-up cleanup pass to reconcile."
+        },
+        {
+          "label": "Drop and recreate the entire persistence directory on first launch, archiving the prior contents into a timestamped tarball next to the data dir",
+          "description": "Simplest forward path: the new code never has to read legacy shapes, so the migration code is zero. Users lose in-flight session history on upgrade unless they manually restore from the archive; acceptable for pre-alpha but unacceptable once we promise persistence."
+        },
+        {
+          "label": "Best-effort upgrade with rollback that keeps the previous JSON files under sessions.json.bak and worktrees/.bak so a downgrade is possible without manual cleanup",
+          "description": "Reads each legacy record, applies a per-field migration, and writes the new shape atomically; on any failure during migration the .bak files are restored in place. Most operationally safe but the most code to maintain, and we have to decide whether the rollback artifact is retained indefinitely or garbage-collected after a successful run."
+        }
+      ]
+    },
+    {
+      "header": "Cleanup policy for rollback artifacts",
+      "question": "If we go with the best-effort upgrade path, when should the .bak files be removed?",
+      "multiSelect": true,
+      "options": [
+        {
+          "label": "Retain indefinitely until the user manually deletes them",
+          "description": "Safest from a data-loss standpoint; predictable for users who want a paper trail of every migration. Downside: ~/.local/share/chud/ grows monotonically across upgrades and we will eventually field a 'why is my data dir 4GB' bug report."
+        },
+        {
+          "label": "Garbage-collect after the first successful launch where no errors were observed",
+          "description": "Cleans itself up automatically; matches what most CLI tools do. Risk: 'no errors observed' is a fuzzy signal — a user might hit an unrelated error on the second launch and find their rollback already gone."
+        },
+        {
+          "label": "Garbage-collect after a fixed retention window (e.g. 14 days) regardless of launch outcome",
+          "description": "Predictable cadence, easy to document. Risk: the retention window is arbitrary and we will get bug reports either way ('too aggressive' or 'too lenient')."
+        },
+        {
+          "label": "Never create rollback artifacts in the first place; rely on the user to back up ~/.local/share/chud/ themselves before upgrading",
+          "description": "Pushes responsibility to the user; matches how most dev tools behave. Acceptable while we are pre-alpha and have explicitly warned about breaking changes."
+        }
       ]
     },
     {
       "header": "Notes",
-      "question": "Anything else the agent should know?",
+      "question": "Anything else the agent should know about your environment, constraints, deadlines, or downstream consumers of the persistence format that would influence which of the above we choose? Free-form — paste logs, link tickets, or describe edge cases that make one of the above options non-viable.",
       "multiSelect": false
     }
   ]

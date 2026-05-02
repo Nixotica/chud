@@ -502,3 +502,144 @@ async def test_publish_continues_when_fetch_fails(monkeypatch):
     results = await pr_mod.publish_draft_prs(_state_with_one_repo())
     assert results[0].error is None
     assert results[0].url == "https://github.com/x/y/pull/10"
+
+
+# --- session-authorship gate (Bug 2 fix) -------------------------------------
+
+_SESSION_START_OID = "abc123abc123abc123abc123abc123abc123abc1"
+
+
+def _state_with_start_head(start_head: str | None) -> SessionState:
+    s = SessionState(id="sess1", initial_prompt="add a foo")
+    s.attached_repos["myrepo"] = Worktree(
+        repo_path=Path("/tmp/myrepo"),
+        worktree_path=Path("/tmp/chud-wt/sess1-myrepo"),
+        branch="chud/add-a-foo-sess1",
+        start_head=start_head,
+    )
+    return s
+
+
+@pytest.mark.asyncio
+async def test_publish_skips_when_no_session_authored_commits(monkeypatch):
+    """Reproducer for PR #51 contamination at the publish layer.
+
+    Even when the branch has commits ahead of ``origin/main`` (the existing
+    abandonment check passes), if none of those commits were authored *by
+    this session* (i.e. ``start_head..HEAD`` is empty) the PR must be
+    discarded silently — never opened with the session's plan as title."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    calls: list[list[str]] = []
+
+    async def fake_run(cmd, cwd=None):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""  # clean
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            # The session-authorship gate checks ``start_head..HEAD``;
+            # any other rev-list (e.g. origin/main..HEAD) would still see
+            # foreign commits and proceed to publish if the gate didn't fire.
+            if any(arg.startswith(_SESSION_START_OID) for arg in cmd):
+                return 0, "0", ""
+            return 0, "8", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_start_head(_SESSION_START_OID))
+    assert len(results) == 1
+    assert results[0].discarded is True
+    assert results[0].url is None
+    assert results[0].error is None
+    # No push, no PR open.
+    assert not any(c[:2] == ["git", "push"] for c in calls)
+    assert not any(c[:1] == ["gh"] for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_publish_proceeds_when_session_authored_commits_exist(monkeypatch):
+    """Gate passes (≥1 commit since ``start_head``) → normal publish flow."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    async def fake_run(cmd, cwd=None):
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return 0, "1", ""
+        if cmd[:3] == ["git", "push", "-u"]:
+            return 0, "", ""
+        if cmd[:1] == ["gh"]:
+            return 0, "https://github.com/x/y/pull/11", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_start_head(_SESSION_START_OID))
+    assert results[0].error is None
+    assert results[0].url == "https://github.com/x/y/pull/11"
+    assert results[0].discarded is False
+
+
+@pytest.mark.asyncio
+async def test_publish_falls_back_to_origin_count_when_start_head_missing(monkeypatch):
+    """Legacy ``Worktree`` (start_head=None) → gate is skipped, existing
+    ``origin/<base>..HEAD`` check is the only line of defense."""
+    monkeypatch.setattr(pr_mod.shutil, "which", lambda _: "/usr/bin/gh")
+
+    rev_list_args: list[list[str]] = []
+
+    async def fake_run(cmd, cwd=None):
+        if cmd[:2] == ["git", "symbolic-ref"]:
+            return 0, "origin/main", ""
+        if cmd[:2] == ["git", "fetch"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            rev_list_args.append(cmd)
+            return 0, "0", ""
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_mod, "_run", fake_run)
+
+    results = await pr_mod.publish_draft_prs(_state_with_start_head(None))
+    assert results[0].discarded is True
+    # Exactly one rev-list — the legacy origin/main..HEAD check, not the
+    # new gate (which is skipped because start_head is None).
+    assert len(rev_list_args) == 1
+    assert rev_list_args[0][-1] == "origin/main..HEAD"
+
+
+# --- Worktree.start_head round-trip ------------------------------------------
+
+
+def test_worktree_round_trip_with_start_head():
+    wt = Worktree(
+        repo_path=Path("/tmp/r"),
+        worktree_path=Path("/tmp/wt"),
+        branch="chud/x-sess1",
+        start_head="deadbeef" * 5,
+    )
+    assert Worktree.from_dict(wt.to_dict()) == wt
+
+
+def test_worktree_from_dict_legacy_without_start_head():
+    """Persistence layer must tolerate sessions.json entries written before
+    the field existed — they default ``start_head`` to None."""
+    legacy = {
+        "repo_path": "/tmp/r",
+        "worktree_path": "/tmp/wt",
+        "branch": "chud/x-sess1",
+    }
+    wt = Worktree.from_dict(legacy)
+    assert wt.start_head is None
+    assert wt.branch == "chud/x-sess1"

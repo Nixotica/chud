@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Label, ListItem, ListView
 
@@ -65,6 +66,17 @@ class SessionListView(VerticalScroll):
         padding: 0 1;
     }
     """
+
+    BINDINGS = [
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+    ]
+
+    def action_cursor_down(self) -> None:
+        self.list_view.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.list_view.action_cursor_up()
 
     def compose(self) -> ComposeResult:
         yield ListView(id="session-list")

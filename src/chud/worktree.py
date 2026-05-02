@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -65,6 +66,56 @@ def repo_toplevel(path: Path) -> Path:
         check=True,
     )
     return Path(result.stdout.strip())
+
+
+def default_base_branch(repo_path: Path) -> str:
+    """Resolve the remote's default branch name (e.g. ``main``, ``master``).
+
+    Order of preference:
+
+    1. ``git symbolic-ref --short refs/remotes/origin/HEAD`` — the canonical
+       answer when the clone has been initialized with a remote HEAD.
+    2. ``gh repo view --json defaultBranchRef`` — covers the case where the
+       symbolic-ref isn't set locally but ``gh`` is on PATH and authed.
+    3. ``"main"`` — last-resort fallback so callers always get a string.
+
+    The returned name is *unqualified* (``main``, not ``origin/main``); callers
+    decide whether to look it up under ``refs/remotes/origin/`` or
+    ``refs/heads/``.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        out = result.stdout.strip()
+        if "/" in out:
+            return out.split("/", 1)[1]
+
+    if shutil.which("gh") is not None:
+        result = subprocess.run(
+            ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_path),
+        )
+        if result.returncode == 0:
+            out = result.stdout.strip()
+            if out:
+                return out
+
+    return "main"
+
+
+def _ref_exists(repo_path: Path, ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--verify", ref],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
 
 
 def detect_cwd_repo() -> Path | None:
@@ -142,17 +193,82 @@ class WorktreeManager:
 
         cmd = ["git", "-C", str(toplevel), "worktree", "add"]
         if branch_exists:
+            # Re-attach: never silently rewrite an existing chud branch — that
+            # would clobber a previous session's in-progress work. Just check
+            # the branch out at its current tip.
             cmd += [str(worktree_path), branch]
         else:
-            cmd += [str(worktree_path), "-b", branch]
+            base_ref = self._resolve_clean_base_ref(toplevel)
+            cmd += [str(worktree_path), "-b", branch, base_ref]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise WorktreeError(f"git worktree add failed for {toplevel}: {result.stderr.strip()}")
 
-        wt = Worktree(repo_path=toplevel, worktree_path=worktree_path, branch=branch)
+        start_head = self._capture_head(worktree_path)
+        wt = Worktree(
+            repo_path=toplevel,
+            worktree_path=worktree_path,
+            branch=branch,
+            start_head=start_head,
+        )
         self.session.attached_repos[repo_key] = wt
         return wt
+
+    @staticmethod
+    def _resolve_clean_base_ref(toplevel: Path) -> str:
+        """Pick a clean upstream ref to fork a new chud branch from.
+
+        Forking from the parent repo's local ``HEAD`` (``git worktree add -b``
+        without a base) silently inherits whatever branch the user — or
+        another concurrent chud session — happens to have checked out, which
+        is how unrelated WIP commits leak into a fresh session's PR. Instead:
+
+        1. Resolve the remote's default branch (``main``/``master``/...).
+        2. Best-effort ``git fetch origin <base>`` — refreshes the remote ref
+           so we fork from current upstream tip, not whatever stale ref the
+           local clone last saw. Offline/auth failures are logged and the
+           fetch is skipped; we fall through to whichever ref exists locally.
+        3. Prefer ``origin/<base>``; fall back to local ``<base>`` if the
+           remote ref is unavailable; raise ``WorktreeError`` if neither
+           exists. A hard error here beats opening a contaminated PR later —
+           unusual repos (no main/master at all) are rare enough to deserve
+           the explicit failure.
+        """
+        base = default_base_branch(toplevel)
+
+        fetch = subprocess.run(
+            ["git", "-C", str(toplevel), "fetch", "origin", base],
+            capture_output=True,
+            text=True,
+        )
+        if fetch.returncode != 0:
+            log.warning(
+                "git fetch origin %s failed in %s: %s",
+                base,
+                toplevel,
+                fetch.stderr.strip(),
+            )
+
+        if _ref_exists(toplevel, f"refs/remotes/origin/{base}"):
+            return f"origin/{base}"
+        if _ref_exists(toplevel, f"refs/heads/{base}"):
+            return base
+        raise WorktreeError(
+            f"could not resolve a base ref for new chud branch in {toplevel}: "
+            f"no origin/{base} and no local {base}"
+        )
+
+    @staticmethod
+    def _capture_head(worktree_path: Path) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
 
     def detach_repo(self, repo_key: str, force: bool = False) -> None:
         wt = self.session.attached_repos.get(repo_key)

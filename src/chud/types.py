@@ -9,6 +9,7 @@ from typing import Any
 KEY_REPO_PATH = "repo_path"
 KEY_WORKTREE_PATH = "worktree_path"
 KEY_BRANCH = "branch"
+KEY_START_HEAD = "start_head"
 
 KEY_ID = "id"
 KEY_STATUS = "status"
@@ -39,12 +40,14 @@ class Worktree:
     repo_path: Path
     worktree_path: Path
     branch: str
+    start_head: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             KEY_REPO_PATH: str(self.repo_path),
             KEY_WORKTREE_PATH: str(self.worktree_path),
             KEY_BRANCH: self.branch,
+            KEY_START_HEAD: self.start_head,
         }
 
     @classmethod
@@ -53,6 +56,7 @@ class Worktree:
             repo_path=Path(d[KEY_REPO_PATH]),
             worktree_path=Path(d[KEY_WORKTREE_PATH]),
             branch=d[KEY_BRANCH],
+            start_head=d.get(KEY_START_HEAD),
         )
 
 

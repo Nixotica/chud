@@ -27,7 +27,7 @@ from chud.widgets.new_session_modal import (
     NewSessionResult,
 )
 from chud.widgets.plan_modal import PlanApprovalModal
-from chud.widgets.question_modal import QuestionModal, _QuestionText
+from chud.widgets.question_modal import QuestionModal, _CheckMarkRadio
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
 
@@ -368,8 +368,19 @@ _LONG_QUESTION_BODY = (
 )
 
 
+_LONG_OPTION_LABEL = (
+    "Best-effort upgrade with rollback that keeps the previous JSON files "
+    "under sessions.json.bak so a downgrade is possible without manual cleanup"
+)
+_LONG_OPTION_DESCRIPTION = (
+    "Reads each legacy record, applies a per-field migration, and writes the new "
+    "shape atomically; on any failure during migration the .bak files are restored "
+    "in place. Most operationally safe but the most code to maintain."
+)
+
+
 def _question_modal_payload() -> dict:
-    """Payload with one overflowing single-line question + one short follow-up."""
+    """Payload mixing a long-body question with both short and long options."""
     return {
         "questions": [
             {
@@ -379,7 +390,10 @@ def _question_modal_payload() -> dict:
                 "options": [
                     {"label": "Preserve metadata"},
                     {"label": "Drop and recreate"},
-                    {"label": "Best-effort upgrade with rollback"},
+                    {
+                        "label": _LONG_OPTION_LABEL,
+                        "description": _LONG_OPTION_DESCRIPTION,
+                    },
                 ],
             },
             {
@@ -392,7 +406,11 @@ def _question_modal_payload() -> dict:
 
 
 async def test_question_modal_mounts_and_renders_long_question():
-    """Long question body must render without crashing the strip pipeline."""
+    """Long question body must render without crashing the strip pipeline.
+
+    Question bodies wrap naturally now (no expand toggle); long options
+    carry the ``(→)`` expand hint, short ones don't.
+    """
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -403,16 +421,18 @@ async def test_question_modal_mounts_and_renders_long_question():
         modal = app.screen
         assert isinstance(modal, QuestionModal)
         _force_render(modal)
-        # Default state is collapsed: every _QuestionText shows the expand hint.
-        bodies = list(modal.query(_QuestionText))
-        assert bodies, "expected at least one _QuestionText to be mounted"
-        for qt in bodies:
-            assert qt._expanded is False
-            assert "→ expand" in str(qt.render())
+        radios = list(modal.query(_CheckMarkRadio))
+        assert radios, "expected radio options to be mounted"
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        short_radio = next(r for r in radios if r._option_label == "Preserve metadata")
+        assert long_radio.is_long is True
+        assert short_radio.is_long is False
+        assert "(→)" in long_radio.label.plain
+        assert "(→)" not in short_radio.label.plain
 
 
-async def test_question_modal_right_arrow_expands_question():
-    """Pressing → on the modal flips every question body into wrapped/expanded."""
+async def test_question_modal_right_arrow_expands_focused_option():
+    """Pressing → on the focused (long) option expands it to multi-line."""
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -422,25 +442,23 @@ async def test_question_modal_right_arrow_expands_question():
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, QuestionModal)
+        # Move the radio highlight onto the long option (third entry).
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
         await pilot.press("right")
         await pilot.pause()
-        bodies = list(modal.query(_QuestionText))
-        assert bodies
-        for qt in bodies:
-            assert qt._expanded is True
-            rendered = str(qt.render())
-            assert "← collapse" in rendered
-            # Expanded mode shows the full body (the long body proves we're not
-            # silently still ellipsis-clipping).
-            assert _LONG_QUESTION_BODY[:80] in rendered or qt._text != _LONG_QUESTION_BODY
-        # The long body specifically must be fully present in its widget.
-        long_body_widget = next(qt for qt in bodies if qt._text == _LONG_QUESTION_BODY)
-        assert _LONG_QUESTION_BODY in str(long_body_widget.render())
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is True
+        plain = long_radio.label.plain
+        assert "(← collapse)" in plain
+        assert _LONG_OPTION_DESCRIPTION in plain
         _force_render(modal)
 
 
-async def test_question_modal_left_arrow_collapses_question():
-    """After expanding, ← collapses every question body back to a single line."""
+async def test_question_modal_left_arrow_collapses_focused_option():
+    """After expanding the focused long option, ← collapses it back."""
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -450,15 +468,17 @@ async def test_question_modal_left_arrow_collapses_question():
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, QuestionModal)
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
         await pilot.press("right")
         await pilot.pause()
         await pilot.press("left")
         await pilot.pause()
-        bodies = list(modal.query(_QuestionText))
-        assert bodies
-        for qt in bodies:
-            assert qt._expanded is False
-            assert "→ expand" in str(qt.render())
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is False
+        assert "(→)" in long_radio.label.plain
         _force_render(modal)
 
 
@@ -901,3 +921,125 @@ async def test_new_session_flow_gh_unavailable_skips_list(monkeypatch):
         assert list_calls == []
         assert len(modals_seen) == 1
         assert not modals_seen[0]._has_issue_picker
+
+
+# --- Vim-style scroll bindings (issue #50) -----------------------------------
+
+
+async def test_app_x_key_kills_selected_session(monkeypatch):
+    """`x` is the kill-session shortcut (rebound from `k` to free `k` for scroll)."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        called: list[str | None] = []
+
+        async def fake_kill(self) -> None:
+            called.append(self._selected_session_id)
+
+        monkeypatch.setattr(ChudApp, "action_kill_session", fake_kill, raising=True)
+        await pilot.press("x")
+        await pilot.pause()
+        assert called == [None]
+
+
+async def test_j_k_scroll_transcript_when_focused():
+    """`j`/`k` drive the transcript's scroll position when it owns focus."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        st = SessionState(id="scroll1", initial_prompt="p")
+        view.show_session(st)
+        # Pump enough lines to make the RichLog scrollable.
+        for i in range(200):
+            view.transcript.write(f"line {i}")
+        await pilot.pause()
+        view.transcript.focus()
+        await pilot.pause()
+        # Start at the bottom (auto_scroll=True).
+        bottom_y = view.transcript.scroll_y
+        assert bottom_y > 0
+        await pilot.press("k")
+        await pilot.pause()
+        assert view.transcript.scroll_y < bottom_y
+
+
+async def test_j_k_in_input_inserts_literal_characters():
+    """While the message Input has focus, `j`/`k` are typed, not consumed as scroll."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        view = app.query_one(SessionView)
+        st = SessionState(id="typing", initial_prompt="p")
+        view.show_session(st)
+        view.input.focus()
+        await pilot.pause()
+        for ch in "jkj":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert view.input.value == "jkj"
+
+
+async def test_j_k_navigate_session_list():
+    """`j`/`k` move the highlight in the session list, mirroring arrow keys."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        slv = app.query_one(SessionListView)
+        for i in range(3):
+            slv.add_session(SessionState(id=f"sess{i}", initial_prompt="p"))
+        await pilot.pause()
+        slv.list_view.focus()
+        slv.list_view.index = 0
+        await pilot.pause()
+        await pilot.press("j")
+        await pilot.pause()
+        assert slv.list_view.index == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert slv.list_view.index == 0
+
+
+async def test_j_k_scroll_plan_modal():
+    """Inside the plan modal, `j`/`k` scroll its inner VerticalScroll."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        plan = "# Plan\n\n" + "\n".join(f"- step {i}" for i in range(80))
+        app.push_screen(PlanApprovalModal(session_id="abc12345", plan_text=plan))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PlanApprovalModal)
+        container = modal.scroll_container()
+        assert container is not None
+        before = container.scroll_y
+        await pilot.press("j")
+        await pilot.pause()
+        # Either scroll_y advances, or content fit and scroll_target_y stays
+        # zero — but in our 80-step plan the container is definitely overfull.
+        assert container.scroll_target_y > before
+
+
+async def test_question_modal_l_h_expand_collapse_long_option():
+    """`l`/`h` mirror right/left for expand/collapse on the focused long option."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            QuestionModal(session_id="abc12345", question_input=_question_modal_payload())
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        # Move radio highlight onto the long option (third entry).
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+        radios = list(modal.query(_CheckMarkRadio))
+        long_radio = next(r for r in radios if r._option_label == _LONG_OPTION_LABEL)
+        assert long_radio._expanded is True
+        await pilot.press("h")
+        await pilot.pause()
+        assert long_radio._expanded is False

@@ -18,8 +18,9 @@ from dataclasses import dataclass
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
+
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
 @dataclass
@@ -29,7 +30,7 @@ class PRReviewResult:
     body: str
 
 
-class PRReviewModal(ModalScreen[PRReviewResult | None]):
+class PRReviewModal(ScrollableModalScreen[PRReviewResult | None]):
     """Show the proposed draft-PR title/body and gate publishing on approval.
 
     Returns:
@@ -100,6 +101,12 @@ class PRReviewModal(ModalScreen[PRReviewResult | None]):
         self._initial_title = title
         self._initial_body = body
         self._repos = list(repos)
+
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one("#repos", VerticalScroll)
+        except Exception:
+            return None
 
     def compose(self) -> ComposeResult:
         with Vertical():
