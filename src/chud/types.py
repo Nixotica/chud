@@ -40,10 +40,6 @@ class Worktree:
     repo_path: Path
     worktree_path: Path
     branch: str
-    # Worktree HEAD oid captured at creation time. The PR-publish path uses
-    # this as the lower bound for "did this session contribute commits?", so
-    # a session whose branch only carries unrelated commits inherited from a
-    # contaminated parent HEAD doesn't get a draft PR opened against it.
     start_head: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
