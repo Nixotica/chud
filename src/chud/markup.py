@@ -1,13 +1,3 @@
-"""Semantic helpers that wrap strings in Rich/Textual markup tags.
-
-Naming reflects the UI role of the text (``TextError``, ``TextHeading``, …)
-rather than the underlying tag, so re-skinning the TUI later is a search-
-and-replace on this module instead of every call site.
-
-Caller is responsible for escaping untrusted text — ``rich.markup.escape``
-is re-exported here for convenience so call sites need only one import.
-"""
-
 from __future__ import annotations
 
 from rich.markup import escape

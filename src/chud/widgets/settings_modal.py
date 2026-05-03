@@ -23,6 +23,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
+from chud.markup import TextHeading, TextMuted
 from chud.options import SESSION_OPTIONS
 from chud.settings import (
     KEY_BRANCH_PREFIX,
@@ -120,7 +121,7 @@ class SettingsModal(ScrollableModalScreen[bool]):
         snapshot = load_settings()
         opt_defaults = user_default_options()
         with Vertical():
-            yield Static("[bold]chud settings[/bold]", id="title")
+            yield Static(TextHeading("chud settings"), id="title")
             with VerticalScroll(id="scroll"):
                 yield Label("Defaults for new sessions", classes="section")
                 for opt in SESSION_OPTIONS:
@@ -189,7 +190,7 @@ class SettingsModal(ScrollableModalScreen[bool]):
             return
         prefix = sanitize_branch_prefix(prefix_widget.value)
         example = f"{prefix}fix-auth-bug-3f9a2c" if include_slug_widget.value else f"{prefix}3f9a2c"
-        preview_widget.update(f"[dim]Preview: {example}[/dim]")
+        preview_widget.update(TextMuted(f"Preview: {example}"))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
