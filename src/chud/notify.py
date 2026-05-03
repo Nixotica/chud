@@ -1,23 +1,17 @@
 from __future__ import annotations
 
 import logging
-import shutil
-import subprocess
+
+from desktop_notifier import DesktopNotifier
 
 log = logging.getLogger(__name__)
 
-_NOTIFY_SEND = shutil.which("notify-send")
+_notifier = DesktopNotifier(app_name="chud")
 
 
-def desktop_notify(title: str, body: str) -> None:
+async def desktop_notify(title: str, body: str) -> None:
     """Best-effort OS notification. Silent no-op if no backend is available."""
-    if _NOTIFY_SEND is None:
-        return
     try:
-        subprocess.Popen(
-            [_NOTIFY_SEND, "--app-name=chud", title, body],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        await _notifier.send(title=title, message=body)
     except Exception:
         log.exception("desktop_notify failed")

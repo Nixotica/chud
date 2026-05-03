@@ -1,15 +1,16 @@
-"""Tests for ``chud.gh`` — the issue picker and shared subprocess plumbing.
+"""Tests for ``chud.gh`` — the issue picker and GitHub client wiring.
 
 The pure ``build_issue_prompt`` formatter is exercised directly. The
-``list_issues`` async path is tested by monkeypatching ``chud.gh._run`` so
-no real ``gh`` subprocess is spawned — these tests must run on machines
-without GitHub CLI installed.
+``list_issues`` / ``list_issue_numbers_with_open_pr`` async paths are
+tested by monkeypatching ``chud.gh._get_client`` and
+``chud.gh._resolve_remote_owner_name`` so no real GitHub call is made —
+these tests must run on machines without network or auth.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -85,50 +86,127 @@ def test_build_issue_prompt_handles_crlf_in_body():
 # --- is_available --------------------------------------------------------------
 
 
-def test_is_available_reflects_path(monkeypatch):
-    monkeypatch.setattr(
-        gh_mod.shutil, "which", lambda name: "/usr/bin/gh" if name == "gh" else None
-    )
+def test_is_available_reflects_token_presence(monkeypatch):
+    """``is_available`` is True iff ``_get_client`` returns a non-None client.
+
+    The seam is the same one the rest of the module uses, so a test that
+    flips it is enough to exercise both branches.
+    """
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: object())
     assert gh_mod.is_available() is True
-    monkeypatch.setattr(gh_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: None)
     assert gh_mod.is_available() is False
+
+
+# --- _resolve_remote_owner_name -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("git@github.com:foo/bar.git", ("foo", "bar")),
+        ("git@github.com:foo/bar", ("foo", "bar")),
+        ("https://github.com/foo/bar.git", ("foo", "bar")),
+        ("https://github.com/foo/bar", ("foo", "bar")),
+        ("ssh://git@github.com/foo/bar.git", ("foo", "bar")),
+        ("https://x:y@github.com/foo/bar.git", ("foo", "bar")),
+    ],
+)
+def test_remote_url_regex_matches_github_shapes(url, expected):
+    """The internal URL regex should accept every GitHub remote shape we
+    expect to see in the wild."""
+    m = gh_mod._GITHUB_REMOTE_RE.match(url)
+    assert m is not None
+    assert (m.group("owner"), m.group("name")) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/foo/bar.git",  # wrong host
+        "git@bitbucket.org:foo/bar.git",
+        "not-a-url",
+        "",
+    ],
+)
+def test_remote_url_regex_rejects_non_github_shapes(url):
+    assert gh_mod._GITHUB_REMOTE_RE.match(url) is None
 
 
 # --- list_issues ---------------------------------------------------------------
 
 
-def _stub_run(monkeypatch: pytest.MonkeyPatch, *, rc: int, stdout: str, stderr: str = "") -> None:
-    """Replace ``gh._run`` with a deterministic async stub."""
+def _fake_issue_obj(
+    *,
+    number: int,
+    title: str = "x",
+    html_url: str = "https://github.com/x/y/issues/1",
+    body: str = "",
+    state: str = "open",
+    pull_request: Any = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        number=number,
+        title=title,
+        html_url=html_url,
+        body=body,
+        state=state,
+        pull_request=pull_request,
+    )
 
-    async def fake_run(
-        cmd: list[str],
-        cwd: Path | None = None,
+
+def _stub_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    issues: list[Any] | None = None,
+    raise_on_call: BaseException | None = None,
+) -> dict[str, Any]:
+    """Install a fake githubkit client whose issue listing returns ``issues``."""
+    seen: dict[str, Any] = {}
+
+    async def fake_list_for_repo(
+        owner: str,
+        name: str,
         *,
-        timeout: float = 0.0,
-    ) -> tuple[int, str, str]:
-        return rc, stdout, stderr
+        state: str = "open",
+        per_page: int = 30,
+    ) -> SimpleNamespace:
+        seen["owner"] = owner
+        seen["name"] = name
+        seen["state"] = state
+        seen["per_page"] = per_page
+        if raise_on_call is not None:
+            raise raise_on_call
+        return SimpleNamespace(parsed_data=issues or [])
 
-    monkeypatch.setattr(gh_mod, "_run", fake_run)
+    fake_client = SimpleNamespace(
+        rest=SimpleNamespace(
+            issues=SimpleNamespace(async_list_for_repo=fake_list_for_repo),
+        ),
+    )
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(gh_mod, "_resolve_remote_owner_name", lambda _: ("x", "y"))
+    return seen
 
 
-async def test_list_issues_parses_gh_json(monkeypatch):
-    payload: list[dict[str, Any]] = [
-        {
-            "number": 1,
-            "title": "Tighten retries",
-            "url": "https://github.com/x/y/issues/1",
-            "body": "first line\r\nsecond line",
-            "state": "OPEN",
-        },
-        {
-            "number": 2,
-            "title": "Add docs",
-            "url": "https://github.com/x/y/issues/2",
-            "body": "",
-            "state": "OPEN",
-        },
+async def test_list_issues_parses_payload(monkeypatch):
+    items = [
+        _fake_issue_obj(
+            number=1,
+            title="Tighten retries",
+            html_url="https://github.com/x/y/issues/1",
+            body="first line\r\nsecond line",
+            state="open",
+        ),
+        _fake_issue_obj(
+            number=2,
+            title="Add docs",
+            html_url="https://github.com/x/y/issues/2",
+            body="",
+            state="open",
+        ),
     ]
-    _stub_run(monkeypatch, rc=0, stdout=json.dumps(payload))
+    _stub_client(monkeypatch, issues=items)
 
     issues = await list_issues(Path("/some/repo"))
 
@@ -137,136 +215,128 @@ async def test_list_issues_parses_gh_json(monkeypatch):
     assert issues[0].title == "Tighten retries"
     # CRLF normalized to LF.
     assert issues[0].body == "first line\nsecond line"
+    # State coerced to upper-case to match the original CLI shape.
+    assert issues[0].state == "OPEN"
     assert issues[1].body == ""
 
 
-async def test_list_issues_returns_empty_on_nonzero_exit(monkeypatch):
-    _stub_run(monkeypatch, rc=1, stdout="", stderr="auth required")
+async def test_list_issues_returns_empty_when_no_client(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: None)
     assert await list_issues(Path("/r")) == []
 
 
-async def test_list_issues_returns_empty_on_invalid_json(monkeypatch):
-    _stub_run(monkeypatch, rc=0, stdout="not json")
+async def test_list_issues_returns_empty_when_no_owner_name(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: object())
+    monkeypatch.setattr(gh_mod, "_resolve_remote_owner_name", lambda _: None)
     assert await list_issues(Path("/r")) == []
 
 
-async def test_list_issues_returns_empty_on_non_list_json(monkeypatch):
-    _stub_run(monkeypatch, rc=0, stdout=json.dumps({"unexpected": "object"}))
+async def test_list_issues_returns_empty_on_request_failure(monkeypatch):
+    from githubkit.exception import RequestError
+
+    _stub_client(monkeypatch, raise_on_call=RequestError(Exception("boom")))
     assert await list_issues(Path("/r")) == []
 
 
-async def test_list_issues_returns_empty_on_empty_stdout(monkeypatch):
-    _stub_run(monkeypatch, rc=0, stdout="")
-    assert await list_issues(Path("/r")) == []
-
-
-async def test_list_issue_numbers_with_open_pr_parses_graphql(monkeypatch):
-    """The GraphQL response collapses to the flat set of issue numbers any
-    open PR would close. Multiple PRs that reference the same issue
-    coalesce; PRs with no closing references are skipped."""
-    repo_view = json.dumps({"owner": {"login": "x"}, "name": "y"})
-    graphql = json.dumps(
-        {
-            "data": {
-                "repository": {
-                    "pullRequests": {
-                        "nodes": [
-                            {
-                                "closingIssuesReferences": {
-                                    "nodes": [{"number": 1}, {"number": 2}],
-                                },
-                            },
-                            {
-                                "closingIssuesReferences": {
-                                    "nodes": [{"number": 1}, {"number": 3}],
-                                },
-                            },
-                            {"closingIssuesReferences": {"nodes": []}},
-                        ],
-                    },
-                },
-            },
-        }
-    )
-
-    calls: list[list[str]] = []
-
-    async def fake_run(
-        cmd: list[str],
-        cwd: Path | None = None,
-        *,
-        timeout: float = 0.0,
-    ) -> tuple[int, str, str]:
-        calls.append(cmd)
-        if cmd[:3] == ["gh", "repo", "view"]:
-            return 0, repo_view, ""
-        if cmd[:3] == ["gh", "api", "graphql"]:
-            return 0, graphql, ""
-        return 1, "", "unexpected command"
-
-    monkeypatch.setattr(gh_mod, "_run", fake_run)
-    nums = await gh_mod.list_issue_numbers_with_open_pr(Path("/r"))
-    assert nums == {1, 2, 3}
-    assert calls[0][:3] == ["gh", "repo", "view"]
-    assert calls[1][:3] == ["gh", "api", "graphql"]
-
-
-async def test_list_issue_numbers_with_open_pr_returns_empty_on_repo_view_failure(
-    monkeypatch,
-):
-    """If ``gh repo view`` can't resolve owner/name, skip GraphQL and
-    return an empty set — picker stays unfiltered rather than empty."""
-
-    async def fake_run(
-        cmd: list[str],
-        cwd: Path | None = None,
-        *,
-        timeout: float = 0.0,
-    ) -> tuple[int, str, str]:
-        if cmd[:3] == ["gh", "repo", "view"]:
-            return 1, "", "no remote"
-        raise AssertionError(f"graphql should not be invoked, got {cmd}")
-
-    monkeypatch.setattr(gh_mod, "_run", fake_run)
-    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+async def test_list_issues_skips_pull_requests(monkeypatch):
+    """GitHub's issues endpoint includes pull requests; the picker should
+    drop them so PRs don't appear under the "issue" label."""
+    items = [
+        _fake_issue_obj(number=1, title="Real issue", body="b"),
+        _fake_issue_obj(number=2, title="A PR", body="b", pull_request=object()),
+    ]
+    _stub_client(monkeypatch, issues=items)
+    issues = await list_issues(Path("/r"))
+    assert len(issues) == 1
+    assert issues[0].number == 1
 
 
 async def test_list_issues_skips_malformed_items(monkeypatch):
-    """Items missing required keys are dropped, well-formed ones survive."""
-    payload = [
-        {"number": "not-an-int", "title": "x", "url": "u", "body": "", "state": "OPEN"},
-        {"number": 7, "title": "good", "url": "u", "body": "b", "state": "OPEN"},
-        {"missing_keys": True},
+    """Items missing required attributes are dropped, well-formed ones survive."""
+    items = [
+        SimpleNamespace(),  # no fields at all → AttributeError on number access
+        _fake_issue_obj(number=7, title="good", body="b"),
     ]
-    _stub_run(monkeypatch, rc=0, stdout=json.dumps(payload))
+    _stub_client(monkeypatch, issues=items)
     issues = await list_issues(Path("/r"))
     assert len(issues) == 1
     assert issues[0].number == 7
 
 
-async def test_list_issues_passes_limit_and_cwd(monkeypatch):
-    """Verify the gh invocation includes --limit and is run with cwd=repo_path."""
+async def test_list_issues_passes_limit_and_owner_name(monkeypatch):
+    """Verify the call uses owner/name from the repo and the limit is forwarded."""
+    seen = _stub_client(monkeypatch, issues=[])
+    await list_issues(Path("/repo/x"), limit=5, timeout=2.5)
+    assert seen["owner"] == "x"
+    assert seen["name"] == "y"
+    assert seen["state"] == "open"
+    assert seen["per_page"] == 5
+
+
+# --- list_issue_numbers_with_open_pr ------------------------------------------
+
+
+def _stub_graphql(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    payload: dict[str, Any] | None = None,
+    raise_on_call: BaseException | None = None,
+) -> dict[str, Any]:
+    """Install a fake githubkit client whose ``async_graphql`` returns ``payload``."""
     seen: dict[str, Any] = {}
 
-    async def fake_run(
-        cmd: list[str],
-        cwd: Path | None = None,
-        *,
-        timeout: float = 0.0,
-    ) -> tuple[int, str, str]:
-        seen["cmd"] = cmd
-        seen["cwd"] = cwd
-        seen["timeout"] = timeout
-        return 0, "[]", ""
+    async def fake_graphql(query: str, variables: dict[str, Any] | None = None) -> Any:
+        seen["query"] = query
+        seen["variables"] = variables
+        if raise_on_call is not None:
+            raise raise_on_call
+        return payload or {}
 
-    monkeypatch.setattr(gh_mod, "_run", fake_run)
-    await list_issues(Path("/repo/x"), limit=5, timeout=2.5)
+    fake_client = SimpleNamespace(async_graphql=fake_graphql)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(gh_mod, "_resolve_remote_owner_name", lambda _: ("x", "y"))
+    return seen
 
-    assert seen["cwd"] == Path("/repo/x")
-    assert seen["timeout"] == 2.5
-    cmd = seen["cmd"]
-    assert cmd[0] == "gh"
-    assert "--limit" in cmd
-    assert cmd[cmd.index("--limit") + 1] == "5"
-    assert "--state" in cmd
-    assert cmd[cmd.index("--state") + 1] == "open"
+
+async def test_list_issue_numbers_with_open_pr_parses_graphql(monkeypatch):
+    """Multiple PRs that reference the same issue coalesce; PRs with no
+    closing references are skipped."""
+    payload = {
+        "repository": {
+            "pullRequests": {
+                "nodes": [
+                    {"closingIssuesReferences": {"nodes": [{"number": 1}, {"number": 2}]}},
+                    {"closingIssuesReferences": {"nodes": [{"number": 1}, {"number": 3}]}},
+                    {"closingIssuesReferences": {"nodes": []}},
+                ],
+            },
+        },
+    }
+    seen = _stub_graphql(monkeypatch, payload=payload)
+    nums = await gh_mod.list_issue_numbers_with_open_pr(Path("/r"))
+    assert nums == {1, 2, 3}
+    assert seen["variables"] == {"owner": "x", "name": "y", "first": 100}
+
+
+async def test_list_issue_numbers_with_open_pr_returns_empty_when_no_client(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: None)
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+
+
+async def test_list_issue_numbers_with_open_pr_returns_empty_when_no_owner_name(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: object())
+    monkeypatch.setattr(gh_mod, "_resolve_remote_owner_name", lambda _: None)
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+
+
+async def test_list_issue_numbers_with_open_pr_returns_empty_on_failure(monkeypatch):
+    from githubkit.exception import RequestError
+
+    _stub_graphql(monkeypatch, raise_on_call=RequestError(Exception("boom")))
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+
+
+async def test_list_issue_numbers_with_open_pr_returns_empty_on_unexpected_payload(monkeypatch):
+    """Schema drift: missing keys collapse to empty set rather than crash."""
+    _stub_graphql(monkeypatch, payload={"repository": None})
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()

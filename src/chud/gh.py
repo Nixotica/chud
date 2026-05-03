@@ -1,4 +1,4 @@
-"""Thin wrappers around the ``gh`` CLI plus a generic async subprocess runner.
+"""GitHub helpers backed by ``githubkit`` (REST + GraphQL via httpx).
 
 Two responsibilities live here:
 
@@ -7,36 +7,39 @@ Two responsibilities live here:
    formatter. These let the TUI offer "link this session to issue #X" without
    blocking the modal on a slow network — every failure mode collapses to an
    empty list and the picker hides silently.
-2. **Shared subprocess plumbing** (``_run``, ``_no_prompt_env``,
-   ``_RUN_TIMEOUT_S``) used by both the issue lookups here and the PR-publish
-   flow in ``chud.pr``. Centralizing them avoids two copies of "kill on
-   timeout, hide credential prompts, never block the TUI" logic drifting out
-   of sync.
+2. **Shared GitHub-client plumbing** (``_get_client``,
+   ``_resolve_remote_owner_name``) used by both the issue lookups here and
+   the PR-publish flow in ``chud.pr``. Centralizing them avoids two clients
+   competing for auth / connection pools.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
-import os
-import shutil
+import re
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
+
+import httpx
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+from githubkit import GitHub
+from githubkit.exception import GitHubException
+
+from chud._auth import resolve_github_token
 
 log = logging.getLogger(__name__)
 
-# A real GitHub push completes in a few seconds; anything past this is a
-# hang, typically a credential prompt that the TUI's raw-mode terminal
-# can't satisfy. Without this guard, ``pr.publish_draft_prs`` parks
-# forever and the post-DONE CLEANUP_REQUESTED broadcast never fires.
-_RUN_TIMEOUT_S = 60.0
-
 # Tight ceiling for the new-session-modal-open path so a slow network or
-# unauthenticated ``gh`` never delays the modal opening. On timeout the
+# unauthenticated token never delays the modal opening. On timeout the
 # call returns an empty list and the picker is hidden silently.
 _LIST_ISSUES_TIMEOUT_S = 5.0
+
+# A real GitHub call completes in a few seconds; anything past this is a
+# hang, typically a flaky connection. Without this guard, ``pr.publish_draft_prs``
+# could park forever and the post-DONE CLEANUP_REQUESTED broadcast would never fire.
+_REQUEST_TIMEOUT_S = 60.0
 
 # Cap on the issue body length we splice into the agent prompt. Long
 # issue bodies can balloon prompt size and push past the model's context
@@ -45,73 +48,59 @@ _LIST_ISSUES_TIMEOUT_S = 5.0
 _BODY_TRUNCATION_LIMIT = 8000
 _BODY_TRUNCATION_MARKER = "\n\n…(truncated)…"
 
-
-def _no_prompt_env() -> dict[str, str]:
-    """Env that forbids git/ssh from waiting on an interactive credential prompt.
-
-    Without these, ``git push`` inheriting the TUI's TTY can either block on
-    stdin (raw mode swallows the keypresses git expects) or scribble a
-    password prompt onto the screen — both manifest as "TUI got laggy and
-    nothing happened." With them set, git/ssh fail fast with an auth error
-    that surfaces as a PR_FAILED toast.
-    """
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env.setdefault("GIT_ASKPASS", "/bin/true")
-    env.setdefault("SSH_ASKPASS", "/bin/true")
-    env.setdefault("SSH_ASKPASS_REQUIRE", "never")
-    return env
-
-
-async def _run(
-    cmd: list[str],
-    cwd: Path | None = None,
-    *,
-    timeout: float = _RUN_TIMEOUT_S,
-) -> tuple[int, str, str]:
-    """Run a subprocess, returning (returncode, stdout, stderr).
-
-    stdin is wired to /dev/null so git/gh can never read from the parent
-    TTY, and a wall-clock ``timeout`` kills any process that still hangs
-    despite that — preserving the invariant that callers always reach
-    their post-await cleanup paths.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=_no_prompt_env(),
+_GITHUB_REMOTE_RE = re.compile(
+    r"""^
+    (?:
+        git@github\.com:                    # SSH form: git@github.com:owner/name
+        |https?://(?:[^@/]+@)?github\.com/  # HTTPS form, optional userinfo
+        |ssh://git@github\.com/             # Explicit ssh:// form
     )
+    (?P<owner>[^/]+)/(?P<name>[^/]+?)       # owner/name
+    (?:\.git)?$                             # optional trailing .git
+    """,
+    re.VERBOSE,
+)
+
+
+@cache
+def _get_client() -> GitHub | None:
+    """Return a memoized authenticated ``GitHub`` client, or ``None`` if no
+    token is available.
+
+    This is the seam tests monkeypatch — replacing it with a client wired
+    to ``respx.MockRouter`` keeps them off the real network.
+    """
+    token = resolve_github_token()
+    if token is None:
+        return None
+    timeout = httpx.Timeout(_REQUEST_TIMEOUT_S)
+    return GitHub(token, timeout=timeout)
+
+
+def _resolve_remote_owner_name(repo_path: Path) -> tuple[str, str] | None:
+    """Extract ``(owner, name)`` from the ``origin`` remote of ``repo_path``.
+
+    Handles the common GitHub remote URL shapes:
+
+    - ``git@github.com:owner/name.git``
+    - ``https://github.com/owner/name`` (with or without ``.git``)
+    - ``ssh://git@github.com/owner/name.git``
+
+    Returns ``None`` when the path isn't a git repo, has no ``origin``, or
+    points at a non-GitHub remote — caller treats those the same as
+    "no GitHub features for this repo."
+    """
     try:
-        try:
-            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
-            log.warning("gh._run timeout after %.0fs: %s", timeout, cmd)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            return (-1, "", f"timed out after {timeout:.0f}s")
-        return (
-            proc.returncode if proc.returncode is not None else -1,
-            out_b.decode(errors="replace").strip(),
-            err_b.decode(errors="replace").strip(),
-        )
-    finally:
-        # asyncio.subprocess.Process.communicate()/wait() don't close the
-        # underlying BaseSubprocessTransport — that only happens when the
-        # Process is GC'd, which may be after our event loop has shut down.
-        # When that race loses we get "RuntimeError: Event loop is closed"
-        # tracebacks from BaseSubprocessTransport.__del__ -> close() trying
-        # to schedule connection_lost on a dead loop. Closing the transport
-        # explicitly here resolves it deterministically while the loop is
-        # still alive. (The attribute is private but stable across CPython.)
-        transport = getattr(proc, "_transport", None)
-        if transport is not None:
-            with contextlib.suppress(Exception):
-                transport.close()
+        repo = Repo(repo_path, search_parent_directories=True)
+        origin = repo.remotes.origin
+        urls = list(origin.urls)
+    except (InvalidGitRepositoryError, NoSuchPathError, ValueError, AttributeError):
+        return None
+    for url in urls:
+        m = _GITHUB_REMOTE_RE.match(url.strip())
+        if m:
+            return m.group("owner"), m.group("name")
+    return None
 
 
 @dataclass(frozen=True)
@@ -131,12 +120,12 @@ class Issue:
 
 
 def is_available() -> bool:
-    """Return True iff the ``gh`` CLI is on PATH.
+    """Return True iff a GitHub token is configured (env var or ``hosts.yml``).
 
-    Cheap pre-flight so the new-session flow can skip spawning subprocesses
-    on machines without GitHub CLI installed.
+    Cheap pre-flight so the new-session flow can skip GitHub calls on
+    machines without auth set up.
     """
-    return shutil.which("gh") is not None
+    return _get_client() is not None
 
 
 async def list_issues(
@@ -147,60 +136,56 @@ async def list_issues(
 ) -> list[Issue]:
     """Best-effort list of recent open issues for the repo at ``repo_path``.
 
-    Calls ``gh issue list --state open --limit N --json number,title,url,body,state``
-    with ``cwd=repo_path`` so ``gh`` infers the GitHub repo from the local
-    remote. Normalizes CRLF → LF in the body so downstream prompt formatting
-    stays clean.
+    Resolves ``origin`` to ``(owner, name)`` via the local git remote, then
+    fetches via the GitHub REST API. Normalizes CRLF → LF in the body so
+    downstream prompt formatting stays clean.
 
-    Every failure mode — non-zero exit (no auth, no remote, not GitHub-
-    hosted), timeout, malformed JSON, missing keys — collapses to an empty
-    list and a WARNING log line. The caller treats empty-list as "no
-    picker," which is exactly what we want for the silent-degrade UX.
+    Every failure mode — no auth, no remote, non-GitHub remote, network
+    error, malformed payload — collapses to an empty list and a WARNING
+    log line. The caller treats empty-list as "no picker," which is
+    exactly what we want for the silent-degrade UX.
     """
-    rc, out, err = await _run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            str(limit),
-            "--json",
-            "number,title,url,body,state",
-        ],
-        cwd=repo_path,
-        timeout=timeout,
-    )
-    if rc != 0:
-        log.warning("gh issue list failed (rc=%d) in %s: %s", rc, repo_path, err)
+    client = _get_client()
+    if client is None:
         return []
-    if not out:
+    owner_name = _resolve_remote_owner_name(repo_path)
+    if owner_name is None:
         return []
+    owner, name = owner_name
+
     try:
-        raw = json.loads(out)
-    except json.JSONDecodeError as e:
-        log.warning("gh issue list returned invalid JSON in %s: %s", repo_path, e)
+        resp = await asyncio.wait_for(
+            client.rest.issues.async_list_for_repo(
+                owner,
+                name,
+                state="open",
+                per_page=limit,
+            ),
+            timeout=timeout,
+        )
+    except (GitHubException, httpx.HTTPError, TimeoutError) as e:
+        log.warning("list_issues failed in %s: %s", repo_path, e)
         return []
-    if not isinstance(raw, list):
-        log.warning("gh issue list JSON is not a list in %s: %r", repo_path, type(raw))
-        return []
+
     issues: list[Issue] = []
-    for item in raw:
-        if not isinstance(item, dict):
+    for item in resp.parsed_data:
+        # GitHub's issues endpoint returns pull requests too; skip them
+        # so the picker doesn't surface PRs as if they were issues.
+        if getattr(item, "pull_request", None) is not None:
             continue
         try:
+            body_raw = getattr(item, "body", None) or ""
             issues.append(
                 Issue(
-                    number=int(item["number"]),
-                    title=str(item["title"]),
-                    url=str(item["url"]),
-                    body=str(item.get("body", "") or "").replace("\r\n", "\n"),
-                    state=str(item.get("state", "OPEN")),
+                    number=int(item.number),
+                    title=str(item.title),
+                    url=str(item.html_url),
+                    body=str(body_raw).replace("\r\n", "\n"),
+                    state=str(item.state).upper(),
                 )
             )
-        except (KeyError, TypeError, ValueError) as e:
-            log.warning("gh issue list item skipped (%s): %r", e, item)
+        except (AttributeError, TypeError, ValueError) as e:
+            log.warning("list_issues item skipped (%s)", e)
             continue
     return issues
 
@@ -228,61 +213,40 @@ async def list_issue_numbers_with_open_pr(
 ) -> set[int]:
     """Return the set of issue numbers that have any open PR linked to them.
 
-    Uses ``gh api graphql`` to read each open PR's ``closingIssuesReferences``
-    — which covers both closing-keyword references in the PR body / commits
+    Reads each open PR's ``closingIssuesReferences`` via GraphQL — which
+    covers both closing-keyword references in the PR body / commits
     (``closes #N``) and links added manually through GitHub's Development
-    sidebar. The new-session picker uses the result to hide issues already
-    in review, regardless of who or what made the PR.
+    sidebar. The new-session picker uses the result to hide issues
+    already in review, regardless of who or what made the PR.
 
-    The ``--json`` flag on ``gh issue list`` doesn't expose this field on
-    older gh versions (we hit that on 2.x in the field), so we go straight
-    to GraphQL — which always has it.
-
-    Every failure mode (no auth, owner/name lookup fails, timeout,
-    malformed JSON) collapses to an empty set; the caller treats that as
-    "no filter info" and the picker stays unfiltered rather than empty.
+    Every failure mode (no auth, owner/name lookup fails, network error,
+    malformed payload) collapses to an empty set; the caller treats that
+    as "no filter info" and the picker stays unfiltered rather than empty.
     """
-    rc, out, err = await _run(
-        ["gh", "repo", "view", "--json", "owner,name"],
-        cwd=repo_path,
-        timeout=timeout,
-    )
-    if rc != 0:
-        log.warning("gh repo view failed (rc=%d) in %s: %s", rc, repo_path, err)
+    client = _get_client()
+    if client is None:
         return set()
+    owner_name = _resolve_remote_owner_name(repo_path)
+    if owner_name is None:
+        return set()
+    owner, name = owner_name
+
     try:
-        meta = json.loads(out)
-        owner = str(meta["owner"]["login"])
-        name = str(meta["name"])
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        log.warning("gh repo view returned unexpected JSON in %s: %s", repo_path, e)
+        data = await asyncio.wait_for(
+            client.async_graphql(
+                _ISSUES_WITH_OPEN_PR_QUERY,
+                variables={"owner": owner, "name": name, "first": pr_limit},
+            ),
+            timeout=timeout,
+        )
+    except (GitHubException, httpx.HTTPError, TimeoutError) as e:
+        log.warning("list_issue_numbers_with_open_pr failed in %s: %s", repo_path, e)
         return set()
 
-    rc, out, err = await _run(
-        [
-            "gh",
-            "api",
-            "graphql",
-            "-f",
-            f"query={_ISSUES_WITH_OPEN_PR_QUERY}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={name}",
-            "-F",
-            f"first={pr_limit}",
-        ],
-        cwd=repo_path,
-        timeout=timeout,
-    )
-    if rc != 0:
-        log.warning("gh api graphql (PRs) failed (rc=%d) in %s: %s", rc, repo_path, err)
-        return set()
     try:
-        raw = json.loads(out)
-        nodes = raw["data"]["repository"]["pullRequests"]["nodes"]
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        log.warning("gh api graphql (PRs) returned unexpected JSON in %s: %s", repo_path, e)
+        nodes = data["repository"]["pullRequests"]["nodes"]
+    except (KeyError, TypeError) as e:
+        log.warning("list_issue_numbers_with_open_pr unexpected JSON in %s: %s", repo_path, e)
         return set()
     if not isinstance(nodes, list):
         return set()
