@@ -13,7 +13,8 @@ from typing import TypeVar
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, TextArea
+from textual.widgets import Input, Select, TextArea
+from textual.widgets._select import SelectOverlay
 
 ScreenResultType = TypeVar("ScreenResultType")
 
@@ -36,7 +37,9 @@ class ScrollableModalScreen(ModalScreen[ScreenResultType]):
         return None
 
     def _vim_scroll(self, *, down: bool) -> None:
-        if isinstance(self.focused, Input | TextArea):
+        # Choice widgets own j/k while focused — let them navigate options
+        # rather than scrolling the modal body out from under the user.
+        if isinstance(self.focused, Input | TextArea | Select | SelectOverlay):
             return
         container = self.scroll_container()
         if container is None:
