@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
 from chud.gh import Issue, build_issue_prompt
+from chud.markup import TextHeading
 from chud.options import EFFORT_VALUES, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
@@ -179,7 +180,7 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("[bold]New session[/bold]")
+            yield Static(TextHeading("New session"))
             body = VerticalScroll(id="body")
             # Let inner widgets own focus — matches QuestionModal's pattern so
             # tab-cycling lands on the prompt/options/effort controls rather
