@@ -10,7 +10,20 @@ Pre-alpha. Under active development.
 
 ## Install
 
-With [uv](https://docs.astral.sh/uv/) (recommended):
+### With Nix
+
+```sh
+nix run github:Nixotica/chud         # one-off
+nix profile install github:Nixotica/chud
+```
+
+Nix manages the Python interpreter and every dependency for you, and the
+wrapped `chud` binary already has `git`, `gh`, and `notify-send` on its
+`PATH`.
+
+### With uv, pipx, or pip
+
+With [uv](https://docs.astral.sh/uv/) (recommended for non-Nix users):
 
 ```sh
 uv tool install git+https://github.com/Nixotica/chud

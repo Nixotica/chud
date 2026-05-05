@@ -7,7 +7,7 @@ name = "chud"
 dynamic = ["version"]
 description = "TUI for orchestrating multiple Claude Code agents in parallel."
 readme = "README.md"
-requires-python = "==3.12.13"
+requires-python = ">=3.12,<3.13"
 authors = [{ name = "Nixotica" }]
 license = { text = "MIT" }
 dependencies = [
