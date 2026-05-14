@@ -19,6 +19,7 @@ from chud.state import (
 )
 from chud.types import KEY_EFFORT
 from chud.widgets._scrollable_modal import ScrollableModalScreen
+from chud.widgets._vim_select import VimSelect
 from chud.widgets.check_mark_toggles import CheckMarkBox
 
 _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
@@ -195,7 +196,7 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                     issue_choices = tuple(
                         (self._format_issue_label(i), str(i.number)) for i in self._issues
                     )
-                    yield Select(
+                    yield VimSelect(
                         issue_choices,
                         id="issue",
                         allow_blank=True,
@@ -234,9 +235,9 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                     "Default leaves it to the SDK; higher values trade speed for thoroughness."
                 )
                 if default_effort is None:
-                    yield Select(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
+                    yield VimSelect(choices, id=KEY_EFFORT, allow_blank=True, tooltip=tooltip)
                 else:
-                    yield Select(
+                    yield VimSelect(
                         choices,
                         id=KEY_EFFORT,
                         allow_blank=False,
