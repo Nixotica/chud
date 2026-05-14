@@ -19,6 +19,7 @@ from chud.state import (
 )
 from chud.types import KEY_EFFORT
 from chud.widgets._scrollable_modal import ScrollableModalScreen
+from chud.widgets.check_mark_toggles import CheckMarkBox
 
 _EFFORT_CHOICES: tuple[tuple[str, str], ...] = tuple((v.capitalize(), v) for v in EFFORT_VALUES)
 
@@ -216,7 +217,7 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                 with options_scroll:
                     yield Label("Options")
                     for opt in SESSION_OPTIONS:
-                        yield Checkbox(
+                        yield CheckMarkBox(
                             opt.label,
                             value=defaults[opt.id],
                             id=f"opt-{opt.id}",
