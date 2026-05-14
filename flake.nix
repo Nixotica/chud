@@ -28,7 +28,9 @@
             pkgs.ruff
             pkgs.pyright
             pkgs.git
+            pkgs.gh
             self.packages.${pkgs.system}.pre-commit
+            self.packages.${pkgs.system}.release
           ];
         };
       });
@@ -69,6 +71,86 @@
             pytest
 
             echo ">>> all checks passed"
+          '';
+        };
+
+        release = pkgs.writeShellApplication {
+          name = "release";
+          runtimeInputs = [ pkgs.git pkgs.gh ];
+          text = ''
+            set -euo pipefail
+
+            if [ $# -ne 1 ]; then
+              echo "usage: release X.Y.Z" >&2
+              exit 2
+            fi
+
+            version="$1"
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][a-z0-9.-]+)?$ ]]; then
+              echo "error: version must look like X.Y.Z (got '$version')" >&2
+              exit 2
+            fi
+
+            tag="v$version"
+            branch="release/$tag"
+
+            current_branch=$(git rev-parse --abbrev-ref HEAD)
+            if [ "$current_branch" != "main" ]; then
+              echo "error: must be on main (currently on '$current_branch')" >&2
+              exit 2
+            fi
+
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo "error: working tree has uncommitted changes" >&2
+              exit 2
+            fi
+
+            echo ">>> fetching origin"
+            git fetch --tags origin main
+
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+              echo "error: local main is not in sync with origin/main" >&2
+              exit 2
+            fi
+
+            if git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "error: tag $tag already exists locally" >&2
+              exit 2
+            fi
+            if git ls-remote --tags --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "error: tag $tag already exists on origin" >&2
+              exit 2
+            fi
+
+            if git show-ref --verify --quiet "refs/heads/$branch"; then
+              echo "error: branch $branch already exists locally" >&2
+              exit 2
+            fi
+
+            current_version=$(cat VERSION)
+            if [ "$current_version" = "$version" ]; then
+              echo "error: VERSION is already '$version'" >&2
+              exit 2
+            fi
+
+            echo ">>> creating branch $branch"
+            git checkout -b "$branch"
+            echo "$version" > VERSION
+            git add VERSION
+            git commit -m "release: $tag"
+
+            echo ">>> pushing $branch and opening PR"
+            git push -u origin "$branch"
+
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "release: $tag" \
+              --body "Bumps \`VERSION\` from \`$current_version\` to \`$version\`. Merging this PR will trigger the stable release workflow, which tags \`$tag\` and publishes a GitHub release with the built sdist + wheel."
+
+            echo
+            echo ">>> release PR opened. After it merges and Tests pass on main,"
+            echo "    .github/workflows/release.yml will publish $tag."
           '';
         };
       });
