@@ -28,6 +28,45 @@ def normalize_effort(raw: object) -> EffortLevel | None:
     return None
 
 
+# Permission-mode policy for a chud session.
+#
+# - ``full_auto``: current behavior — after plan approval the SDK runs in
+#   ``acceptEdits`` mode and only plan/AskUserQuestion interrupt.
+# - ``default``: SDK runs in ``default`` mode after plan approval — the
+#   user's ``~/.claude/settings.json`` allow/deny rules apply, and chud
+#   surfaces a modal for any tool the SDK still asks about.
+# - ``low_perms``: SDK runs in ``acceptEdits`` after plan approval, but
+#   chud's PreToolUse hook unconditionally surfaces a modal for every
+#   Edit/Write/NotebookEdit/Bash call (read-only tools still pass).
+RunMode = Literal["full_auto", "default", "low_perms"]
+RUN_MODE_VALUES: tuple[RunMode, ...] = get_args(RunMode)
+RUN_MODE_DEFAULT: RunMode = "full_auto"
+
+# Tool names that low-perms requires explicit user approval for. Read-only
+# tools are deliberately omitted so the agent can still explore the worktree.
+LOW_PERMS_GATED_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit", "Bash"})
+
+# (label, value) pairs for the run-mode Select in the new-session + settings
+# modals. Kept in this module so the two widgets stay in sync.
+RUN_MODE_CHOICES: tuple[tuple[str, RunMode], ...] = (
+    ("Full auto", "full_auto"),
+    ("Default (uses ~/.claude settings)", "default"),
+    ("Low-perms (prompt for each edit)", "low_perms"),
+)
+
+
+def normalize_run_mode(raw: object) -> RunMode:
+    """Coerce a persisted/raw run_mode value to a known choice.
+
+    Unknown / legacy / wrong-type values fall back to ``RUN_MODE_DEFAULT``
+    so a corrupted config can't crash the app and so the runtime branch
+    in ``session.py`` stays a simple ``==`` comparison.
+    """
+    if raw in RUN_MODE_VALUES:
+        return raw  # type: ignore[return-value]
+    return RUN_MODE_DEFAULT
+
+
 @dataclass(frozen=True)
 class SessionOption:
     id: str

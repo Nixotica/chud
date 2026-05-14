@@ -22,6 +22,7 @@ from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
+from chud.widgets.permission_modal import PermissionModal
 from chud.widgets.plan_modal import PlanApprovalModal
 from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
 from chud.widgets.question_modal import QuestionModal
@@ -32,7 +33,7 @@ from chud.worktree import detect_cwd_repo
 
 log = logging.getLogger(__name__)
 
-PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
+PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question", "permission"]
 
 DevHook = Callable[["ChudApp"], Awaitable[None]]
 
@@ -89,6 +90,7 @@ class ChudApp(App[None]):
         self._open_cleanup_modals: set[str] = set()
         self._open_pr_review_modals: set[str] = set()
         self._open_question_modals: set[str] = set()
+        self._open_permission_modals: set[str] = set()
         # FIFO queue of blocking user-input requests from agents. The first
         # request is shown until resolved; later requests wait their turn so a
         # newly-arrived modal can't cover one the user hasn't answered yet.
@@ -265,6 +267,7 @@ class ChudApp(App[None]):
                 options=result.options,
                 effort=result.effort,
                 issue_number=result.issue.number if result.issue is not None else None,
+                run_mode=result.run_mode,
             )
         except Exception as e:
             log.exception("create_session failed")
@@ -448,6 +451,19 @@ class ChudApp(App[None]):
                     payload={"input": event.payload.get("input", {})},
                 )
             )
+        elif event.kind == EventKind.PERMISSION_REQUESTED:
+            # The session emits a fresh dict; copy here is the only one needed
+            # to isolate the modal's view of tool_input from the SDK round-trip.
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="permission",
+                    payload={
+                        "tool_name": event.payload.get("tool_name", ""),
+                        "tool_input": dict(event.payload.get("tool_input", {})),
+                    },
+                )
+            )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
             self._enqueue_prompt(
                 PromptRequest(
@@ -544,6 +560,8 @@ class ChudApp(App[None]):
                 self._show_input_focus(req)
             elif req.kind == "question":
                 self._show_question_modal(req)
+            elif req.kind == "permission":
+                self._show_permission_modal(req)
             return
 
     def _resolve_active_prompt(self, req: PromptRequest) -> None:
@@ -714,6 +732,51 @@ class ChudApp(App[None]):
                     await sess.answer_question("(user dismissed the question without answering)")
             finally:
                 self._open_question_modals.discard(session_id)
+                self._resolve_active_prompt(req)
+
+        self.run_worker(show_modal(), exclusive=False)
+
+    def _show_permission_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        tool_name = str(req.payload.get("tool_name", ""))
+        # No defensive copy: the dict was already isolated when the event
+        # was enqueued in ``_on_event``.
+        tool_input = req.payload.get("tool_input", {})
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        if session_id in self._open_permission_modals:
+            self._resolve_active_prompt(req)
+            return
+        self._open_permission_modals.add(session_id)
+
+        async def show_modal() -> None:
+            try:
+                result = await self.push_screen_wait(
+                    PermissionModal(
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
+                )
+                sess = self.manager.sessions.get(session_id)
+                if sess is None:
+                    return
+                # PermissionModal returns (approved, reason) or None on
+                # unexpected dismissal. None falls through to a plain deny so
+                # the agent gets a deterministic answer either way.
+                approved = False
+                reason = ""
+                if isinstance(result, tuple) and len(result) == 2:
+                    approved = bool(result[0])
+                    reason = str(result[1] or "")
+                if approved:
+                    await sess.approve_tool()
+                elif reason:
+                    await sess.deny_tool(reason=reason)
+                else:
+                    await sess.deny_tool()
+            finally:
+                self._open_permission_modals.discard(session_id)
                 self._resolve_active_prompt(req)
 
         self.run_worker(show_modal(), exclusive=False)

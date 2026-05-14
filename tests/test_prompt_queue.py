@@ -337,6 +337,39 @@ async def test_status_change_to_awaiting_user_keeps_input_prompt(tmp_path):
         assert app._prompt_active.kind == "input"
 
 
+def _permission_event(sid: str, tool_name: str = "Edit", tool_input: dict | None = None) -> Event:
+    return Event(
+        session_id=sid,
+        kind=EventKind.PERMISSION_REQUESTED,
+        payload={"tool_name": tool_name, "tool_input": dict(tool_input or {})},
+    )
+
+
+@pytest.mark.asyncio
+async def test_permission_requested_enqueues_as_permission_kind(tmp_path):
+    """PERMISSION_REQUESTED feeds the FIFO queue with kind='permission'."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _register_session(app, "sess-a", tmp_path)
+        # Park a plan request first so the permission stays queued and we can
+        # inspect the request without racing the modal worker.
+        app._on_event(_plan_event("sess-a"))
+        await pilot.pause()
+        assert app._prompt_active is not None
+        assert app._prompt_active.kind == "plan"
+
+        app._on_event(_permission_event("sess-a", tool_name="Bash", tool_input={"command": "ls"}))
+        await pilot.pause()
+
+        # The permission request should be queued behind the active plan modal.
+        assert any(p.kind == "permission" for p in app._prompt_queue)
+        perm = next(p for p in app._prompt_queue if p.kind == "permission")
+        assert perm.session_id == "sess-a"
+        assert perm.payload["tool_name"] == "Bash"
+        assert perm.payload["tool_input"] == {"command": "ls"}
+
+
 @pytest.mark.asyncio
 async def test_cleanup_request_queues_behind_active_plan(tmp_path):
     app = ChudApp()
