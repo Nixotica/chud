@@ -16,28 +16,7 @@ from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Stat
 
 from chud.markup import TextHeading, TextMuted
 from chud.widgets._scrollable_modal import ScrollableModalScreen
-
-
-def _toggle_button_with_off_glyph(self: Checkbox | RadioButton, inner_off: str) -> Content:
-    """Render the toggle button cell, swapping glyph by ``self.value``.
-
-    Textual 8.x's default ``ToggleButton._button`` renders ``BUTTON_INNER``
-    in both states and only flips its colour. We want a different character
-    per state — ✓ when on, ``inner_off`` when off — so we recreate the
-    assembly with a value-dependent inner.
-    """
-    button_style = self.get_visual_style("toggle--button")
-    side_style = Style(
-        foreground=button_style.background,
-        background=self.background_colors[1],
-    )
-    inner = self.BUTTON_INNER if self.value else inner_off
-    return Content.assemble(
-        (self.BUTTON_LEFT, side_style),
-        (inner, button_style),
-        (self.BUTTON_RIGHT, side_style),
-    )
-
+from chud.widgets.check_mark_toggles import CheckMarkBox, toggle_button_with_off_glyph
 
 # Heuristic: an option is "long enough that the user might want to expand it"
 # when its rendered single-line form exceeds this many columns. Picked to
@@ -155,22 +134,14 @@ class _ExpandableOption:
         self._refresh_collapsed_label()
 
 
-class _CheckMarkBox(_ExpandableOption, Checkbox):
-    BUTTON_INNER = "✓"
-    BUTTON_INNER_OFF = "X"
-
+class _CheckMarkBox(_ExpandableOption, CheckMarkBox):
     def __init__(self, label_text: str, description: str = "", **kwargs: Any) -> None:
         self._init_option(label_text, description)
         super().__init__(self._compute_label(), **kwargs)
-
-    @property
-    def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
 
 
 class _CheckMarkRadio(_ExpandableOption, RadioButton):
     BUTTON_INNER = "✓"
-    BUTTON_INNER_OFF = "●"
 
     def __init__(self, label_text: str, description: str = "", **kwargs: Any) -> None:
         self._init_option(label_text, description)
@@ -178,7 +149,7 @@ class _CheckMarkRadio(_ExpandableOption, RadioButton):
 
     @property
     def _button(self) -> Content:
-        return _toggle_button_with_off_glyph(self, self.BUTTON_INNER_OFF)
+        return toggle_button_with_off_glyph(self, "●")
 
 
 class QuestionModal(ScrollableModalScreen[str | None]):
