@@ -21,9 +21,9 @@ import contextlib
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
 
+from chud.markup import TextHeading, TextMuted
 from chud.options import SESSION_OPTIONS
 from chud.settings import (
     KEY_BRANCH_PREFIX,
@@ -34,10 +34,11 @@ from chud.settings import (
     save_settings,
 )
 from chud.state import load_user_config, save_user_config, user_default_options
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
-class SettingsModal(ModalScreen[bool]):
+class SettingsModal(ScrollableModalScreen[bool]):
     """Edit persistent chud preferences.
 
     Returns ``True`` if the user saved, ``False`` if cancelled / dismissed.
@@ -111,11 +112,17 @@ class SettingsModal(ModalScreen[bool]):
         Binding("f2", "save", "Save", priority=True),
     ]
 
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one("#scroll", VerticalScroll)
+        except Exception:
+            return None
+
     def compose(self) -> ComposeResult:
         snapshot = load_settings()
         opt_defaults = user_default_options()
         with Vertical():
-            yield Static("[bold]chud settings[/bold]", id="title")
+            yield Static(TextHeading("chud settings"), id="title")
             with VerticalScroll(id="scroll"):
                 yield Label("Defaults for new sessions", classes="section")
                 for opt in SESSION_OPTIONS:
@@ -184,7 +191,7 @@ class SettingsModal(ModalScreen[bool]):
             return
         prefix = sanitize_branch_prefix(prefix_widget.value)
         example = f"{prefix}fix-auth-bug-3f9a2c" if include_slug_widget.value else f"{prefix}3f9a2c"
-        preview_widget.update(f"[dim]Preview: {example}[/dim]")
+        preview_widget.update(TextMuted(f"Preview: {example}"))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":

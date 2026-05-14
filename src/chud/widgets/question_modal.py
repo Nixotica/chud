@@ -10,11 +10,12 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.geometry import Size
-from textual.screen import ModalScreen
 from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, RadioButton, RadioSet, Static
 
+from chud.markup import TextHeading, TextMuted
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 from chud.widgets.check_mark_toggles import CheckMarkBox, toggle_button_with_off_glyph
 
 # Heuristic: an option is "long enough that the user might want to expand it"
@@ -151,7 +152,7 @@ class _CheckMarkRadio(_ExpandableOption, RadioButton):
         return toggle_button_with_off_glyph(self, "●")
 
 
-class QuestionModal(ModalScreen[str | None]):
+class QuestionModal(ScrollableModalScreen[str | None]):
     """Render an AskUserQuestion tool call and collect the user's answer."""
 
     DEFAULT_CSS = """
@@ -264,10 +265,16 @@ class QuestionModal(ModalScreen[str | None]):
                 }
             ]
 
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one(VerticalScroll)
+        except Exception:
+            return None
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold]Question from session {self.session_id[:8]}[/bold]",
+                TextHeading(f"Question from session {self.session_id[:8]}"),
                 id="question-title",
             )
             scroll = VerticalScroll()
@@ -276,7 +283,7 @@ class QuestionModal(ModalScreen[str | None]):
                 for idx, q in enumerate(self.questions):
                     header = str(q.get("header") or "").strip()
                     if header:
-                        yield Static(f"[bold]{header}[/bold]", classes="question-header")
+                        yield Static(TextHeading(header), classes="question-header")
                     # Question body wraps naturally; no expand/collapse.
                     yield Static(
                         str(q.get("question") or "(no question text)"),
@@ -285,7 +292,7 @@ class QuestionModal(ModalScreen[str | None]):
                     )
                     raw = q.get("_raw")
                     if raw:
-                        yield Static(f"[dim]{raw}[/dim]")
+                        yield Static(TextMuted(str(raw)))
                     options = q.get("options") or []
                     multi = bool(q.get("multiSelect"))
                     if not options:
@@ -447,25 +454,27 @@ class QuestionModal(ModalScreen[str | None]):
         Right/left expand/collapse the *focused* option (or the highlighted
         radio inside a focused RadioSet). Up/down moves between Checkboxes
         in the same multi-select question, falling through to adjacent
-        questions at the boundaries. Inputs keep their own cursor handling
+        questions at the boundaries. j/k mirror up/down for vim-style nav,
+        including inside a focused RadioSet (Textual's RadioSet only binds
+        up/down/left/right natively). Inputs keep their own cursor handling
         because we early-return on ``Input``-focused widgets.
         """
         focused = self.focused
         if focused is None or isinstance(focused, Input):
             return
 
-        if event.key in ("right", "left"):
+        if event.key in ("right", "left", "l", "h"):
             target = self._focused_option()
             if target is None or not target.is_long:
                 return
-            expand = event.key == "right"
+            expand = event.key in ("right", "l")
             if target._expanded != expand:
                 target.set_expanded(expand)
                 event.stop()
                 event.prevent_default()
             return
 
-        if event.key in ("up", "down") and isinstance(focused, Checkbox):
+        if event.key in ("up", "down", "j", "k") and isinstance(focused, Checkbox):
             wid = focused.id or ""
             if "-opt" not in wid:
                 return
@@ -478,7 +487,7 @@ class QuestionModal(ModalScreen[str | None]):
             count = len(q.get("options") or [])
             event.stop()
             event.prevent_default()
-            if event.key == "down":
+            if event.key in ("down", "j"):
                 if opt_idx + 1 < count:
                     with contextlib.suppress(Exception):
                         self.query_one(f"#q{q_idx}-opt{opt_idx + 1}", Checkbox).focus()
@@ -490,6 +499,39 @@ class QuestionModal(ModalScreen[str | None]):
                         self.query_one(f"#q{q_idx}-opt{opt_idx - 1}", Checkbox).focus()
                 else:
                     self._retreat_to(q_idx)
+            return
+
+        if event.key in ("up", "down", "j", "k") and isinstance(focused, RadioSet):
+            # RadioSet binds up/down/left/right natively but not j/k, and at
+            # the first/last radio neither set crosses into the adjacent
+            # question. We fill both gaps here so single-select questions
+            # navigate identically to multi-select ones.
+            radios = [c for c in focused.children if isinstance(c, _CheckMarkRadio)]
+            if not radios:
+                return
+            selected = focused._selected if isinstance(focused._selected, int) else 0
+            going_down = event.key in ("down", "j")
+            at_boundary = (going_down and selected >= len(radios) - 1) or (
+                not going_down and selected <= 0
+            )
+            q_idx = self._question_index_of(focused)
+            if at_boundary and q_idx is not None:
+                event.stop()
+                event.prevent_default()
+                if going_down:
+                    self._advance_from(q_idx)
+                else:
+                    self._retreat_to(q_idx)
+                return
+            if event.key in ("j", "k"):
+                event.stop()
+                event.prevent_default()
+                with contextlib.suppress(Exception):
+                    if going_down:
+                        focused.action_next_button()
+                    else:
+                        focused.action_previous_button()
+                return
 
     def _submit(self) -> None:
         parts: list[str] = []

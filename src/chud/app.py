@@ -10,13 +10,15 @@ from typing import Any, Literal
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
-from textual.widgets import Footer, Header, Input, ListView
+from textual.containers import Horizontal, ScrollableContainer
+from textual.widget import Widget
+from textual.widgets import Footer, Header, Input, ListView, RichLog
 
 from chud import gh as gh_mod
 from chud import state as state_mod
 from chud.gh import Issue
 from chud.manager import SessionManager
+from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
@@ -57,9 +59,15 @@ class ChudApp(App[None]):
 
     BINDINGS = [
         ("n", "new_session", "New session"),
-        ("k", "kill_session", "Kill session"),
+        ("x", "kill_session", "Kill session"),
         ("s", "settings", "Settings"),
         ("q", "quit", "Quit"),
+        # Vim-style scroll on the focused pane (transcript / session list).
+        # Textual won't deliver these to the app while a text input owns focus,
+        # so typing `j`/`k` into the message box still inserts the literal
+        # character.
+        ("j", "scroll_focus_down", "Scroll down"),
+        ("k", "scroll_focus_up", "Scroll up"),
     ]
 
     CSS = """
@@ -279,6 +287,35 @@ class ChudApp(App[None]):
             self._user_modal_depth -= 1
             self._maybe_show_next_prompt()
 
+    def action_scroll_focus_down(self) -> None:
+        self._scroll_focused(down=True)
+
+    def action_scroll_focus_up(self) -> None:
+        self._scroll_focused(down=False)
+
+    def _scroll_focused(self, *, down: bool) -> None:
+        """Scroll the nearest scrollable ancestor of ``self.focused``.
+
+        For ``ListView`` we move the highlight (which auto-scrolls) so
+        ``j``/``k`` matches the existing arrow-key behaviour. For other
+        scrollables we just nudge ``scroll_y`` by one line.
+        """
+        target: Widget | None = self.focused
+        while target is not None:
+            if isinstance(target, ListView):
+                if down:
+                    target.action_cursor_down()
+                else:
+                    target.action_cursor_up()
+                return
+            if isinstance(target, RichLog | ScrollableContainer):
+                if down:
+                    target.scroll_down()
+                else:
+                    target.scroll_up()
+                return
+            target = target.parent if isinstance(target.parent, Widget) else None
+
     async def action_kill_session(self) -> None:
         sid = self._selected_session_id
         if sid is None:
@@ -437,7 +474,7 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"Draft PR opened ({repo}): {url}")
             view = self.query_one(SessionView)
-            view.transcript.write(f"[bold green]+ draft PR:[/bold green] {repo} → {url}")
+            view.transcript.write(f"{TextSuccess('+ draft PR:')} {repo} → {url}")
             # Refresh the issues + PR-link caches now so the next `n` press
             # filters out the issue this PR just attached to, instead of
             # waiting for the 120s background tick. GitHub may need a moment
@@ -452,15 +489,13 @@ class ChudApp(App[None]):
             repo = event.payload.get("repo", "")
             self.notify(f"PR failed ({repo}): {err}", severity="error")
             view = self.query_one(SessionView)
-            view.transcript.write(f"[bold red]! PR failed:[/bold red] {repo or '(session)'}: {err}")
+            view.transcript.write(f"{TextError('! PR failed:')} {repo or '(session)'}: {err}")
         elif event.kind == EventKind.WORKTREE_DISCARDED:
             branch = event.payload.get("branch", "")
             repo = event.payload.get("repo", "")
             view = self.query_one(SessionView)
             view.transcript.write(
-                f"[dim]· discarded empty branch {branch}"
-                + (f" ({repo})" if repo else "")
-                + "[/dim]"
+                TextMuted(f"· discarded empty branch {branch}" + (f" ({repo})" if repo else ""))
             )
 
     # ------------------------------------------------------------------ prompt queue

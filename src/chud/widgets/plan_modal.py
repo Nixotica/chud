@@ -3,11 +3,13 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Markdown, Static
 
+from chud.markup import TextHeading
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
-class PlanApprovalModal(ModalScreen[bool | str]):
+
+class PlanApprovalModal(ScrollableModalScreen[bool | str]):
     """Show the agent's proposed plan and gate execution on user approval.
 
     Returns:
@@ -68,9 +70,18 @@ class PlanApprovalModal(ModalScreen[bool | str]):
         self.session_id = session_id
         self.plan_text = plan_text
 
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one(VerticalScroll)
+        except Exception:
+            return None
+
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(f"[bold]Plan from session {self.session_id[:8]}[/bold]", id="plan-title")
+            yield Static(
+                TextHeading(f"Plan from session {self.session_id[:8]}"),
+                id="plan-title",
+            )
             with VerticalScroll():
                 yield Markdown(self.plan_text or "_(empty plan)_")
             with Horizontal():

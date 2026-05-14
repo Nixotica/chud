@@ -51,7 +51,14 @@ class PRResult:
 
 
 async def _default_branch(repo_path: Path) -> str:
-    """Resolve the remote's default branch; fall back to ``main``."""
+    """Resolve the remote's default branch; fall back to ``main``.
+
+    Mirrors ``worktree.default_base_branch`` (sync version) so the publish
+    path and the worktree-create path agree on the answer. The async copy
+    here exists because every other subprocess call in this module routes
+    through ``_run`` (which tests monkeypatch); using a sync helper would
+    bypass the test harness.
+    """
     rc, out, _ = await _run(
         ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         cwd=repo_path,
@@ -247,6 +254,25 @@ async def publish_draft_prs(
                         error=f"auto-commit failed: {err}",
                     )
                 )
+                continue
+
+        # Session-authorship gate. ``start_head`` is the worktree HEAD
+        # captured by ``WorktreeManager.attach_repo`` *before* the agent
+        # runs, so ``rev-list start_head..HEAD`` counts only commits that
+        # this session produced. If a contaminated branch base means the
+        # branch carries other sessions' commits but none of our own, the
+        # ``origin/<base>..HEAD`` check below would still see those foreign
+        # commits and proceed to publish a misleading PR — this gate stops
+        # that. Skipped for legacy worktrees persisted before the field
+        # existed (``start_head is None``); in that case the existing
+        # ``origin/<base>..HEAD`` check is the only line of defense.
+        if wt.start_head:
+            rc, count, err = await _run(
+                ["git", "rev-list", "--count", f"{wt.start_head}..HEAD"],
+                cwd=worktree,
+            )
+            if rc == 0 and count.strip() == "0":
+                results.append(PRResult(repo_label=label, branch=branch, discarded=True))
                 continue
 
         # Refresh ``origin/{base}`` before counting commits ahead. Without this,

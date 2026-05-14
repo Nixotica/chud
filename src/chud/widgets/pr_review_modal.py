@@ -18,8 +18,10 @@ from dataclasses import dataclass
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
+
+from chud.markup import TextHeading, TextMuted, TextRepoLabel
+from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
 @dataclass
@@ -29,7 +31,7 @@ class PRReviewResult:
     body: str
 
 
-class PRReviewModal(ModalScreen[PRReviewResult | None]):
+class PRReviewModal(ScrollableModalScreen[PRReviewResult | None]):
     """Show the proposed draft-PR title/body and gate publishing on approval.
 
     Returns:
@@ -101,18 +103,24 @@ class PRReviewModal(ModalScreen[PRReviewResult | None]):
         self._initial_body = body
         self._repos = list(repos)
 
+    def scroll_container(self) -> VerticalScroll | None:
+        try:
+            return self.query_one("#repos", VerticalScroll)
+        except Exception:
+            return None
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                f"[bold]Open draft PR(s) for session {self.session_id[:8]}?[/bold]",
+                TextHeading(f"Open draft PR(s) for session {self.session_id[:8]}?"),
                 id="pr-title-static",
             )
             with VerticalScroll(id="repos"):
                 if self._repos:
                     for label in self._repos:
-                        yield Static(f"  • [yellow]{label}[/yellow]")
+                        yield Static(f"  • {TextRepoLabel(label)}")
                 else:
-                    yield Static("  [dim](no attached repos)[/dim]")
+                    yield Static(f"  {TextMuted('(no attached repos)')}")
             yield Label("Title")
             yield Input(value=self._initial_title, id="title-input")
             yield Label("Body")
