@@ -35,6 +35,7 @@ from chud.settings import (
 )
 from chud.state import load_user_config, save_user_config, user_default_options
 from chud.widgets._scrollable_modal import ScrollableModalScreen
+from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
 class SettingsModal(ScrollableModalScreen[bool]):
@@ -125,7 +126,7 @@ class SettingsModal(ScrollableModalScreen[bool]):
             with VerticalScroll(id="scroll"):
                 yield Label("Defaults for new sessions", classes="section")
                 for opt in SESSION_OPTIONS:
-                    yield Checkbox(
+                    yield CheckMarkBox(
                         opt.label,
                         value=opt_defaults[opt.id],
                         id=f"opt-{opt.id}",
@@ -139,7 +140,7 @@ class SettingsModal(ScrollableModalScreen[bool]):
                     placeholder="chud/",
                     id="branch-prefix",
                 )
-                yield Checkbox(
+                yield CheckMarkBox(
                     "Include prompt slug in branch name",
                     value=snapshot[KEY_INCLUDE_SLUG],
                     id="include-slug",

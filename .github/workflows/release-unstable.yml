@@ -20,7 +20,19 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Skip if this is a release commit
+        id: gate
+        run: |
+          sha="${{ github.event.workflow_run.head_sha }}"
+          if git show --name-only --pretty="" "$sha" | grep -qx VERSION; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release commit detected; stable release workflow will handle it."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -28,14 +40,17 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install build tooling
+        if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install build
 
       - name: Build sdist + wheel
+        if: steps.gate.outputs.skip != 'true'
         run: python -m build
 
       - name: Resolve version
+        if: steps.gate.outputs.skip != 'true'
         id: version
         run: |
           version=$(ls dist/*.whl | head -n1 | sed -E 's|.*/chud-([^-]+)-.*|\1|')
@@ -44,6 +59,7 @@ jobs:
           echo "tag=unstable-$short_sha" >> "$GITHUB_OUTPUT"
 
       - name: Publish prerelease
+        if: steps.gate.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
