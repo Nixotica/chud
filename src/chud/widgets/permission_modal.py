@@ -9,14 +9,15 @@ Surfaced by ``AgentSession`` when a permission decision is needed:
 
 Both paths use ``AgentSession._await_permission`` to block on a future; the
 modal's dismiss value resolves it. Mirrors the keyboard vocabulary of
-``PlanApprovalModal`` (a / r / Enter / Esc) so users move between modals
+``PlanApprovalModal`` (a / r / x / Enter / Esc) so users move between modals
 without context switching.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from textual import on
 from textual.app import ComposeResult
@@ -28,16 +29,34 @@ from chud.markup import TextHeading
 from chud.widgets._scrollable_modal import ScrollableModalScreen
 
 
-class PermissionModal(ScrollableModalScreen[tuple[bool, str] | None]):
+@dataclass(frozen=True)
+class PermissionDecision:
+    """User's choice on the per-tool permission modal.
+
+    ``action`` is one of:
+      - ``approve`` — let the agent execute this tool call.
+      - ``deny`` — block this call. ``reason`` carries any typed feedback
+        (empty for a plain deny).
+      - ``kill`` — terminate the session outright. Used when the user has
+        seen enough and wants to stop the agent rather than answer this
+        prompt-after-prompt.
+    """
+
+    action: Literal["approve", "deny", "kill"]
+    reason: str = ""
+
+
+class PermissionModal(ScrollableModalScreen[PermissionDecision | None]):
     """Ask the user to approve/deny a single tool call.
 
     Dismiss values:
-      - ``(True, "")``  — approve.
-      - ``(False, "")`` — plain deny (sent to the agent as the default deny
-        message).
-      - ``(False, reason)`` — deny with free-text feedback. ``reason`` is
-        forwarded to the agent as the deny message, same channel
-        ``reject_plan`` uses.
+      - ``PermissionDecision("approve")`` — approve.
+      - ``PermissionDecision("deny")`` — plain deny (sent to the agent as
+        the default deny message).
+      - ``PermissionDecision("deny", reason)`` — deny with free-text
+        feedback. ``reason`` is forwarded to the agent as the deny message,
+        same channel ``reject_plan`` uses.
+      - ``PermissionDecision("kill")`` — user wants the session terminated.
       - ``None`` — defensive; resolved by the caller as a plain deny.
     """
 
@@ -87,6 +106,7 @@ class PermissionModal(ScrollableModalScreen[tuple[bool, str] | None]):
     BINDINGS = [
         Binding("a", "approve", "Approve"),
         Binding("r", "deny", "Deny"),
+        Binding("x", "kill", "Kill session"),
         Binding("enter", "respond", "Deny with feedback"),
         Binding("escape", "deny", "Deny"),
     ]
@@ -126,10 +146,13 @@ class PermissionModal(ScrollableModalScreen[tuple[bool, str] | None]):
                 yield Static(body, markup=False)
             with Horizontal():
                 # Buttons stay mouse-clickable but never grab keyboard focus,
-                # so a/r/enter/escape bindings always fire while the Input is
-                # hidden. Once the Input is revealed and focused, it owns
+                # so a/r/k/enter/escape bindings always fire while the Input
+                # is hidden. Once the Input is revealed and focused, it owns
                 # Enter (to submit) and printable characters.
-                deny_btn = Button("Deny (r)", id="deny", variant="error")
+                kill_btn = Button("Kill session (x)", id="kill", variant="error")
+                kill_btn.can_focus = False
+                yield kill_btn
+                deny_btn = Button("Deny (r)", id="deny", variant="warning")
                 deny_btn.can_focus = False
                 yield deny_btn
                 respond_btn = Button("Deny w/ feedback (Enter)", id="respond")
@@ -142,17 +165,22 @@ class PermissionModal(ScrollableModalScreen[tuple[bool, str] | None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "approve":
-            self.dismiss((True, ""))
+            self.dismiss(PermissionDecision("approve"))
         elif event.button.id == "deny":
-            self.dismiss((False, ""))
+            self.dismiss(PermissionDecision("deny"))
+        elif event.button.id == "kill":
+            self.dismiss(PermissionDecision("kill"))
         elif event.button.id == "respond":
             self.action_respond()
 
     def action_approve(self) -> None:
-        self.dismiss((True, ""))
+        self.dismiss(PermissionDecision("approve"))
 
     def action_deny(self) -> None:
-        self.dismiss((False, ""))
+        self.dismiss(PermissionDecision("deny"))
+
+    def action_kill(self) -> None:
+        self.dismiss(PermissionDecision("kill"))
 
     def action_respond(self) -> None:
         """First press reveals the input + focuses it; second Enter (handled
@@ -172,4 +200,4 @@ class PermissionModal(ScrollableModalScreen[tuple[bool, str] | None]):
         # Empty submit collapses to a plain deny so the user can't accidentally
         # forward a no-op message; any non-empty string becomes the deny
         # reason.
-        self.dismiss((False, text))
+        self.dismiss(PermissionDecision("deny", text))

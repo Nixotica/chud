@@ -15,6 +15,7 @@ from textual.widgets import Checkbox
 from chud.app import ChudApp
 from chud.gh import Issue
 from chud.options import SESSION_OPTIONS
+from chud.types import KEY_RUN_MODE
 from chud.widgets._vim_select import VimSelect, VimSelectOverlay
 from chud.widgets.new_session_modal import NewSessionModal
 from chud.widgets.settings_modal import SettingsModal
@@ -140,6 +141,32 @@ async def test_jk_navigates_option_checkboxes():
         await pilot.pause()
         assert isinstance(modal.focused, Checkbox)
         assert modal.focused.id == first_id
+
+
+async def test_run_mode_picker_uses_vim_select_in_new_session_modal():
+    """The permission-mode picker in the New Session modal should support
+    j/k navigation — i.e. be a ``VimSelect``, not a plain ``Select``."""
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(NewSessionModal())
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, NewSessionModal)
+        assert isinstance(modal.query_one(f"#{KEY_RUN_MODE}"), VimSelect)
+
+
+async def test_run_mode_picker_uses_vim_select_in_settings_modal(tmp_path, monkeypatch):
+    """Same guarantee for the settings modal's permission-mode default."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(SettingsModal())
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, SettingsModal)
+        assert isinstance(modal.query_one("#run-mode"), VimSelect)
 
 
 async def test_jk_navigates_option_checkboxes_in_settings_modal(tmp_path, monkeypatch):

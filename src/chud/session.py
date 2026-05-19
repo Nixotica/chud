@@ -87,6 +87,13 @@ class AgentSession:
             asyncio.Future[PermissionResultAllow | PermissionResultDeny] | None
         ) = None
         self._pending_permission: dict[str, Any] | None = None
+        # Set when the user denies a plan or tool call. When the agent then
+        # ends its turn (ResultMessage), we route to AWAITING_USER instead of
+        # DONE so the user can either reply or kill the session — never the
+        # auto-PR / cleanup pipeline, which would otherwise treat a deny-driven
+        # giveup as a successful finish. Cleared when the user sends a fresh
+        # message (start of a new turn).
+        self._deny_pending: bool = False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -197,6 +204,7 @@ class AgentSession:
         if self.state.status == SessionStatus.AWAITING_USER:
             await self._set_status(SessionStatus.EXECUTING)
         self.state.pending_question = None
+        self._deny_pending = False
         await self._client.query(text)
 
     async def approve_plan(self) -> None:
@@ -237,6 +245,7 @@ class AgentSession:
         self._plan_decision.set_result(PermissionResultDeny(message=reason))
         self._plan_decision = None
         self._pending_plan_text = None
+        self._deny_pending = True
         await self._set_status(SessionStatus.PLANNING)
 
     async def answer_question(self, answer_text: str) -> None:
@@ -283,6 +292,7 @@ class AgentSession:
         self._permission_decision.set_result(PermissionResultDeny(message=reason))
         self._permission_decision = None
         self._pending_permission = None
+        self._deny_pending = True
 
     # ------------------------------------------------------------------ SDK callbacks
 
@@ -560,7 +570,26 @@ class AgentSession:
             # Full ResultMessage stats stay in chud.log; the UI just sees the
             # status transition emitted by _set_status.
             log.debug("ResultMessage for session %s: %s", self.state.id, _stringify(msg))
-            await self._set_status(SessionStatus.DONE)
+            if self._deny_pending:
+                # The agent ended its turn after the user denied an edit or
+                # rejected a plan. Don't treat this as a successful completion
+                # (which would auto-publish a PR / trigger cleanup); park the
+                # session in AWAITING_USER so the user can either reply with a
+                # follow-up or kill the session explicitly.
+                self._deny_pending = False
+                await self._set_status(SessionStatus.AWAITING_USER)
+                await self._emit(
+                    EventKind.NEEDS_USER_INPUT,
+                    {
+                        "reason": "deny_followup",
+                        "message": (
+                            "Agent ended its turn after your denial. Send a new "
+                            "message to continue, or kill the session."
+                        ),
+                    },
+                )
+            else:
+                await self._set_status(SessionStatus.DONE)
         else:
             log.warning("unknown SDK message type %s", type(msg).__name__)
             await self._emit(

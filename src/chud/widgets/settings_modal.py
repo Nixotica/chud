@@ -42,6 +42,7 @@ from chud.state import (
 )
 from chud.types import KEY_RUN_MODE
 from chud.widgets._scrollable_modal import ScrollableModalScreen
+from chud.widgets._vim_select import VimSelect
 from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
@@ -141,7 +142,7 @@ class SettingsModal(ScrollableModalScreen[bool]):
                     )
 
                 yield Label("Permission mode default", classes="section")
-                yield Select(
+                yield VimSelect(
                     RUN_MODE_CHOICES,
                     id="run-mode",
                     value=user_default_run_mode(),

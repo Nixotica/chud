@@ -319,3 +319,82 @@ async def test_deny_tool_with_no_pending_decision_is_noop():
     sess = _make_session("default")
     await sess.deny_tool("nope")
     assert sess._permission_decision is None
+
+
+# ---------------------------------------------------------------- deny → AWAITING_USER routing
+
+
+def _result_message() -> Any:
+    """Minimal ResultMessage stand-in matching the SDK's shape (all fields
+    that the dataclass requires). Reading isn't needed — only ``isinstance``
+    in ``_dispatch_message`` cares."""
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype="",
+        duration_ms=0,
+        duration_api_ms=0,
+        is_error=False,
+        num_turns=0,
+        session_id="t-perm",
+    )
+
+
+async def test_result_message_after_deny_routes_to_awaiting_user_not_done():
+    """A denied edit must not collapse the session into DONE — otherwise the
+    PR / cleanup pipeline fires on an aborted run. Park in AWAITING_USER so
+    the user can either reply or kill the session explicitly."""
+    sess = _make_session("default")
+    sess._permission_decision = asyncio.get_event_loop().create_future()
+    await sess.deny_tool("blocking this one")
+    assert sess._deny_pending is True
+
+    await sess._dispatch_message(_result_message())
+
+    assert sess.state.status == SessionStatus.AWAITING_USER
+    assert sess._deny_pending is False
+
+    # Sanity: a NEEDS_USER_INPUT event was emitted so the UI surfaces a
+    # prompt for the user.
+    saw_input = False
+    while not sess.events.empty():
+        ev = sess.events.get_nowait()
+        if ev.kind == EventKind.NEEDS_USER_INPUT:
+            saw_input = True
+            break
+    assert saw_input
+
+
+async def test_result_message_after_reject_plan_routes_to_awaiting_user_not_done():
+    """Same guarantee as the edit-deny path, applied to plan rejection. The
+    agent giving up after a rejected plan must not silently 'complete' and
+    trigger PR/cleanup."""
+    sess = _make_session("default", status=SessionStatus.AWAITING_PLAN_APPROVAL)
+    sess._plan_decision = asyncio.get_event_loop().create_future()
+    await sess.reject_plan(reason="try another approach")
+    assert sess._deny_pending is True
+    assert sess.state.status == SessionStatus.PLANNING
+
+    await sess._dispatch_message(_result_message())
+
+    assert sess.state.status == SessionStatus.AWAITING_USER
+    assert sess._deny_pending is False
+
+
+async def test_send_message_clears_deny_flag():
+    """A user-supplied follow-up resets the turn — the next ResultMessage
+    represents a fresh agent loop and should route to DONE normally."""
+
+    class _SilentClient:
+        async def query(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+    sess = _make_session("default")
+    sess._client = _SilentClient()  # type: ignore[assignment]
+    sess._deny_pending = True
+
+    await sess.send_message("try this instead")
+    assert sess._deny_pending is False
+
+    await sess._dispatch_message(_result_message())
+    assert sess.state.status == SessionStatus.DONE

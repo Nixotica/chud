@@ -248,7 +248,7 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                         tooltip=tooltip,
                     )
                 yield Label("Permission mode:")
-                yield Select(
+                yield VimSelect(
                     RUN_MODE_CHOICES,
                     id=KEY_RUN_MODE,
                     allow_blank=False,
