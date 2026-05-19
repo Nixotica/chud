@@ -231,6 +231,14 @@ class AgentSession:
         """Permission interception. Gates on ExitPlanMode; allows everything else."""
         if tool_name == "ExitPlanMode":
             plan_text = str(tool_input.get("plan", "")).strip()
+            if not plan_text:
+                return PermissionResultDeny(
+                    message=(
+                        "ExitPlanMode requires a non-empty plan. Continue "
+                        "planning and call ExitPlanMode again with the "
+                        "proposed plan written out in the `plan` argument."
+                    )
+                )
             self._pending_plan_text = plan_text
             self._plan_decision = asyncio.get_event_loop().create_future()
             await self._set_status(SessionStatus.AWAITING_PLAN_APPROVAL)
@@ -438,7 +446,18 @@ class AgentSession:
             # Full ResultMessage stats stay in chud.log; the UI just sees the
             # status transition emitted by _set_status.
             log.debug("ResultMessage for session %s: %s", self.state.id, _stringify(msg))
-            await self._set_status(SessionStatus.DONE)
+            # DONE is reserved for sessions whose plan was approved and whose
+            # execution finished. If the agent ended its turn without ever
+            # getting past plan approval (e.g. it gave up after a plan
+            # rejection), surface it as AWAITING_USER so the user can re-engage.
+            if self.state.status in (
+                SessionStatus.NEW,
+                SessionStatus.PLANNING,
+                SessionStatus.AWAITING_PLAN_APPROVAL,
+            ):
+                await self._set_status(SessionStatus.AWAITING_USER)
+            else:
+                await self._set_status(SessionStatus.DONE)
         else:
             log.warning("unknown SDK message type %s", type(msg).__name__)
             await self._emit(
