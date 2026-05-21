@@ -323,8 +323,7 @@ class ChudApp(App[None]):
         await self.manager.kill_session(sid)
         self.query_one(SessionListView).remove_session(sid)
         self._event_log.pop(sid, None)
-        self._selected_session_id = None
-        self.query_one(SessionView).show_session(None)
+        self._select_after_removal(sid)
         self._drop_session_prompts(sid)
 
     # ------------------------------------------------------------------ list selection
@@ -351,6 +350,28 @@ class ChudApp(App[None]):
         view.show_session(sess.state)
         for ev in self._event_log.get(sid, []):
             view.render_event(ev)
+
+    def _select_after_removal(self, removed_sid: str) -> None:
+        """Pick a new active session after ``removed_sid``'s row goes away.
+
+        No-op when the removed session wasn't the active one. Otherwise falls
+        through to the first remaining session (insertion order of
+        ``SessionManager.sessions`` matches the sidebar's visual order), or
+        clears the right pane when none remain.
+        """
+        if self._selected_session_id != removed_sid:
+            return
+        next_sid = next(iter(self.manager.sessions), None)
+        if next_sid is None:
+            self._selected_session_id = None
+            self.query_one(SessionView).show_session(None)
+            return
+        self._select_session(next_sid)
+        list_view = self.query_one(SessionListView).list_view
+        for i, child in enumerate(list_view.children):
+            if isinstance(child, SessionRow) and child.session_id == next_sid:
+                list_view.index = i
+                break
 
     # ------------------------------------------------------------------ input box
 
@@ -630,9 +651,7 @@ class ChudApp(App[None]):
                 await self.manager.kill_session(session_id, cleanup_worktrees=True)
                 self.query_one(SessionListView).remove_session(session_id)
                 self._event_log.pop(session_id, None)
-                if self._selected_session_id == session_id:
-                    self._selected_session_id = None
-                    self.query_one(SessionView).show_session(None)
+                self._select_after_removal(session_id)
                 # Drop any other queued prompts (e.g. a stale PLAN_PROPOSED)
                 # for the now-killed session so the queue doesn't try to
                 # re-show them.
