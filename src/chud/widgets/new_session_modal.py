@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -9,15 +10,16 @@ from textual.widgets import Button, Checkbox, Label, Select, Static, TextArea
 
 from chud.gh import Issue, build_issue_prompt
 from chud.markup import TextHeading
-from chud.options import EFFORT_VALUES, SESSION_OPTIONS
+from chud.options import EFFORT_VALUES, RUN_MODE_CHOICES, RUN_MODE_DEFAULT, SESSION_OPTIONS
 from chud.state import (
     claude_settings_effort,
     load_user_config,
     save_user_config,
     user_default_effort,
     user_default_options,
+    user_default_run_mode,
 )
-from chud.types import KEY_EFFORT
+from chud.types import KEY_EFFORT, KEY_RUN_MODE
 from chud.widgets._scrollable_modal import ScrollableModalScreen
 from chud.widgets._vim_select import VimSelect
 from chud.widgets.check_mark_toggles import CheckMarkBox
@@ -37,6 +39,7 @@ class NewSessionResult:
     options: dict[str, bool] = field(default_factory=user_default_options)
     effort: str | None = None
     issue: Issue | None = None
+    run_mode: str = RUN_MODE_DEFAULT
 
 
 class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
@@ -244,6 +247,19 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                         value=default_effort,
                         tooltip=tooltip,
                     )
+                yield Label("Permission mode:")
+                yield VimSelect(
+                    RUN_MODE_CHOICES,
+                    id=KEY_RUN_MODE,
+                    allow_blank=False,
+                    value=user_default_run_mode(),
+                    tooltip=(
+                        "Controls what the session does after you approve the plan. "
+                        "Full auto = run unattended. Default = use your ~/.claude "
+                        "allow/deny rules and prompt for the rest. Low-perms = prompt "
+                        "for every Edit/Write/Bash."
+                    ),
+                )
             with Horizontal(id="buttons"):
                 yield Button("Cancel (Esc)", id="cancel")
                 yield Button("Start (F2)", id="start", variant="success")
@@ -298,6 +314,7 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
         config = load_user_config()
         config.update(options)
         config[KEY_EFFORT] = self._read_effort()
+        config[KEY_RUN_MODE] = self._read_run_mode()
         save_user_config(config)
         self.app.notify("Saved as defaults.")
 
@@ -307,6 +324,11 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
         if not isinstance(raw, str):
             return None
         return raw
+
+    def _read_run_mode(self) -> str:
+        """Read the run-mode Select. ``allow_blank=False`` on the widget
+        guarantees a string is returned."""
+        return cast(str, self.query_one(f"#{KEY_RUN_MODE}", Select).value)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -342,5 +364,6 @@ class NewSessionModal(ScrollableModalScreen[NewSessionResult | None]):
                 options=options,
                 effort=self._read_effort(),
                 issue=self._read_issue(),
+                run_mode=self._read_run_mode(),
             )
         )

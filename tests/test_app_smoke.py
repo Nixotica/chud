@@ -26,7 +26,7 @@ from chud.widgets.new_session_modal import (
     NewSessionModal,
     NewSessionResult,
 )
-from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.plan_modal import PlanApprovalModal, PlanDecision
 from chud.widgets.question_modal import QuestionModal, _CheckMarkRadio
 from chud.widgets.session_list import SessionListView, SessionRow
 from chud.widgets.session_view import SessionView
@@ -302,7 +302,7 @@ async def test_plan_modal_approve_via_a_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str | None] = []
+        result: list[PlanDecision | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -310,14 +310,14 @@ async def test_plan_modal_approve_via_a_key():
         await pilot.pause()
         await pilot.press("a")
         await pilot.pause()
-        assert result == [True]
+        assert result == [PlanDecision("approve")]
 
 
 async def test_plan_modal_reject_via_r_key():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str | None] = []
+        result: list[PlanDecision | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -325,14 +325,14 @@ async def test_plan_modal_reject_via_r_key():
         await pilot.pause()
         await pilot.press("r")
         await pilot.pause()
-        assert result == [False]
+        assert result == [PlanDecision("reject")]
 
 
 async def test_plan_modal_reject_via_escape():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str | None] = []
+        result: list[PlanDecision | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -340,14 +340,29 @@ async def test_plan_modal_reject_via_escape():
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
-        assert result == [False]
+        assert result == [PlanDecision("reject")]
+
+
+async def test_plan_modal_kill_via_x_key():
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        result: list[PlanDecision | None] = []
+        app.push_screen(
+            PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
+            callback=lambda v: result.append(v),
+        )
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert result == [PlanDecision("kill")]
 
 
 async def test_plan_modal_respond_with_typed_message():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str | None] = []
+        result: list[PlanDecision | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -366,14 +381,50 @@ async def test_plan_modal_respond_with_typed_message():
         # Second Enter submits via Input.Submitted → on_respond_submitted.
         await pilot.press("enter")
         await pilot.pause()
-        assert result == ["use pathlib"]
+        assert result == [PlanDecision("reject", "use pathlib")]
+
+
+async def test_permission_modal_kill_via_x_key():
+    """Pressing `x` on the permission modal should dismiss with a kill
+    decision, mirroring the plan modal's behaviour."""
+    from chud.widgets.permission_modal import PermissionDecision, PermissionModal
+
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        result: list[PermissionDecision | None] = []
+        app.push_screen(
+            PermissionModal(session_id="abc12345", tool_name="Edit", tool_input={}),
+            callback=lambda v: result.append(v),
+        )
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        assert result == [PermissionDecision("kill")]
+
+
+async def test_permission_modal_deny_via_r_key():
+    from chud.widgets.permission_modal import PermissionDecision, PermissionModal
+
+    app = ChudApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        result: list[PermissionDecision | None] = []
+        app.push_screen(
+            PermissionModal(session_id="abc12345", tool_name="Edit", tool_input={}),
+            callback=lambda v: result.append(v),
+        )
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        assert result == [PermissionDecision("deny")]
 
 
 async def test_plan_modal_respond_empty_collapses_to_reject():
     app = ChudApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        result: list[bool | str | None] = []
+        result: list[PlanDecision | None] = []
         app.push_screen(
             PlanApprovalModal(session_id="abc12345", plan_text="# plan"),
             callback=lambda v: result.append(v),
@@ -383,7 +434,7 @@ async def test_plan_modal_respond_empty_collapses_to_reject():
         await pilot.pause()
         await pilot.press("enter")  # submit empty
         await pilot.pause()
-        assert result == [False]
+        assert result == [PlanDecision("reject", "")]
 
 
 _LONG_QUESTION_BODY = (

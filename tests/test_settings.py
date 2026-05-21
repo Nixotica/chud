@@ -120,6 +120,23 @@ def test_render_pr_body_footer_unknown_placeholder_is_safe(tmp_path, monkeypatch
 # ---------------------------------------------------------------- snapshot
 
 
+def test_user_default_run_mode_defaults_to_full_auto(tmp_path, monkeypatch):
+    _redirect_config(tmp_path, monkeypatch)
+    assert state_mod.user_default_run_mode() == "full_auto"
+
+
+def test_user_default_run_mode_reads_persisted_value(tmp_path, monkeypatch):
+    _redirect_config(tmp_path, monkeypatch)
+    state_mod.save_user_config({"run_mode": "low_perms"})
+    assert state_mod.user_default_run_mode() == "low_perms"
+
+
+def test_user_default_run_mode_normalizes_unknown_value(tmp_path, monkeypatch):
+    _redirect_config(tmp_path, monkeypatch)
+    state_mod.save_user_config({"run_mode": "bypass-all"})
+    assert state_mod.user_default_run_mode() == "full_auto"
+
+
 def test_load_settings_returns_full_snapshot(tmp_path, monkeypatch):
     _redirect_config(tmp_path, monkeypatch)
     snap = settings_mod.load_settings()
