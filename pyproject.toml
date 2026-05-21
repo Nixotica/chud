@@ -42,6 +42,7 @@ version-file = "src/chud/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chud"]
+exclude = ["src/chud/dev.py"]
 
 [tool.ruff]
 line-length = 100
