@@ -271,8 +271,7 @@ class SessionManager:
                 )
 
         # Reuse the same task-tracking slot so kill_session cancels an
-        # in-flight publish-then-cleanup chain in O(1), exactly like the
-        # legacy ``_finish_done`` task did.
+        # in-flight publish-then-cleanup chain in O(1).
         task = asyncio.create_task(runner(), name=f"chud-pr-review-{session_id}")
         self._pr_tasks[session_id] = task
         task.add_done_callback(lambda _t, s=session_id: self._pr_tasks.pop(s, None))

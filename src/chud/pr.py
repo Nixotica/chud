@@ -66,17 +66,12 @@ async def _default_branch(repo_path: Path) -> str:
 
 
 def _is_dirty_sync(worktree: Path) -> bool:
-    """Return True iff ``worktree`` has any tracked changes or untracked files.
-
-    Mirrors the ``git status --porcelain`` semantics that the original
-    subprocess version checked.
-    """
+    """Return True iff ``worktree`` has any tracked changes or untracked files."""
     try:
         return Repo(worktree).is_dirty(untracked_files=True)
     except Exception:
-        # Treat any GitPython failure the same as the legacy "non-zero exit
-        # = not dirty" branch — caller falls through to the rev-list step
-        # where the real failure surfaces with a useful message.
+        # Caller falls through to the rev-list step where the real failure
+        # surfaces with a useful message.
         return False
 
 
@@ -170,9 +165,8 @@ def _title_from_prompt(prompt: str) -> str:
 def _body_from_prompt(session_id: str, prompt: str) -> str:
     """Fallback body when no approved plan is available.
 
-    The lead line is the user-configurable PR body footer template (default
-    matches the legacy ``*Draft PR opened by chud session ...*`` blurb), so
-    a custom template applies here too.
+    The lead line is the user-configurable PR body footer template, so a
+    custom template applies here too.
     """
     footer = render_pr_body_footer(session_id)
     return f"{footer}\n\nInitial prompt:\n\n```\n{prompt}\n```\n"
@@ -240,8 +234,7 @@ def _push_branch_sync(worktree: Path, branch: str) -> tuple[bool, str]:
 
     GitPython's ``PushInfo.flags`` is a bitfield; ``ERROR``/``REJECTED``/
     ``REMOTE_REJECTED`` all signal a real push failure. Surface the summary
-    text so the UI gets the same kind of stderr blurb the CLI used to
-    provide.
+    text so the UI gets a meaningful error blurb.
     """
     try:
         repo = Repo(worktree)
@@ -306,8 +299,7 @@ async def publish_draft_prs(
         # branch carries other sessions' commits but none of our own, the
         # ``origin/<base>..HEAD`` check below would still see those foreign
         # commits and proceed to publish a misleading PR — this gate stops
-        # that. Skipped for legacy worktrees persisted before the field
-        # existed (``start_head is None``); in that case the existing
+        # that. When ``start_head is None`` (field absent), the
         # ``origin/<base>..HEAD`` check is the only line of defense.
         if wt.start_head:
             session_count = await asyncio.to_thread(

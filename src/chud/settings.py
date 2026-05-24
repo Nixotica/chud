@@ -28,8 +28,6 @@ KEY_PR_BODY_FOOTER = "pr_body_footer"
 
 DEFAULT_BRANCH_PREFIX = "chud/"
 DEFAULT_INCLUDE_SLUG = True
-# Kept byte-for-byte compatible with the legacy hardcoded footer in pr.py so
-# users with no config still see the original PR body.
 DEFAULT_PR_BODY_FOOTER = "*Draft PR opened by chud session `{session_id}`.*"
 
 # Git ref names tolerate slashes, dots, hyphens, underscores, alphanumerics —

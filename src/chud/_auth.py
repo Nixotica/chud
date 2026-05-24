@@ -10,13 +10,11 @@ Resolution order (first match wins):
 
 Returns ``None`` if nothing resolves; callers treat that as "no GitHub
 features" and degrade silently (empty issue picker, ``PRResult.error``
-for publish attempts) — matching the pre-migration behavior when
-``shutil.which("gh")`` returned ``None``.
+for publish attempts).
 
 The token can't change mid-process (env vars are read once, ``hosts.yml``
 is owned by the user's shell), so the resolver is memoized via
-``functools.cache`` — the modal-open path used to read this on every
-open.
+``functools.cache``.
 """
 
 from __future__ import annotations

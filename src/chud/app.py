@@ -103,9 +103,9 @@ class ChudApp(App[None]):
         self._user_modal_depth: int = 0
         # Launch-time repo + cached open issues for the new-session modal.
         # Populated in on_mount() and refreshed in the background so pressing
-        # `n` doesn't pay for a `gh issue list` shell-out each time.
+        # `n` doesn't pay for a GitHub API round-trip each time.
         # ``_issues_cache`` mirrors ``_fetch_issues_for_modal``'s contract:
-        # ``None`` means "hide picker" (no gh / no repo / first refresh
+        # ``None`` means "hide picker" (no auth / no repo / first refresh
         # in-flight / no open issues), non-empty list means ready.
         # ``_issues_with_pr_cache`` carries the set of issue numbers that
         # have an open PR linked (closing-keyword or Development-sidebar);
