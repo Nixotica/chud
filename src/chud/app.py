@@ -58,6 +58,8 @@ class ChudApp(App[None]):
     TITLE = "chud"
     SUB_TITLE = "multi-agent Claude HUD"
 
+    ENABLE_COMMAND_PALETTE = False
+
     BINDINGS = [
         ("n", "new_session", "New session"),
         ("x", "kill_session", "Kill session"),
@@ -72,6 +74,15 @@ class ChudApp(App[None]):
     ]
 
     CSS = """
+    Screen {
+        background: transparent;
+    }
+    Header {
+        background: transparent;
+    }
+    Footer {
+        background: transparent;
+    }
     Horizontal#main {
         height: 1fr;
     }
