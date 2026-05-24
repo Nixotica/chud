@@ -26,6 +26,7 @@ import httpx
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from githubkit import GitHub
 from githubkit.exception import GitHubException
+from githubkit.utils import UNSET
 
 from chud._auth import resolve_github_token
 
@@ -169,9 +170,13 @@ async def list_issues(
 
     issues: list[Issue] = []
     for item in resp.parsed_data:
-        # GitHub's issues endpoint returns pull requests too; skip them
-        # so the picker doesn't surface PRs as if they were issues.
-        if getattr(item, "pull_request", None) is not None:
+        # GitHub's issues endpoint returns pull requests too; skip them so
+        # the picker doesn't surface PRs as if they were issues. githubkit
+        # marks the field as ``UNSET`` (its missing-field sentinel) on real
+        # issues and populates a struct on PRs, so both ``None`` and
+        # ``UNSET`` mean "this is an issue."
+        pr_field = getattr(item, "pull_request", None)
+        if pr_field is not None and pr_field is not UNSET:
             continue
         try:
             body_raw = getattr(item, "body", None) or ""

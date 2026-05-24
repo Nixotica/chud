@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from githubkit.utils import UNSET
 
 from chud import gh as gh_mod
 from chud.gh import Issue, build_issue_prompt, list_issues
@@ -133,6 +134,51 @@ def test_remote_url_regex_rejects_non_github_shapes(url):
     assert gh_mod._GITHUB_REMOTE_RE.match(url) is None
 
 
+# --- _resolve_remote_owner_name (integration with GitPython) -------------------
+
+
+def _init_repo_with_origin(repo_path: Path, *, origin_url: str) -> None:
+    from git import Repo
+
+    repo_path.mkdir(parents=True, exist_ok=True)
+    repo = Repo.init(repo_path, initial_branch="main")
+    repo.create_remote("origin", origin_url)
+
+
+def test_resolve_remote_owner_name_reads_origin_from_repo(tmp_path: Path):
+    """End-to-end: real ``Repo`` with an ``origin`` remote pointing at GitHub
+    yields the expected (owner, name) tuple. The regex layer is covered
+    above; this guards the GitPython integration itself.
+    """
+    repo = tmp_path / "myrepo"
+    _init_repo_with_origin(repo, origin_url="git@github.com:acme/widget.git")
+    assert gh_mod._resolve_remote_owner_name(repo) == ("acme", "widget")
+
+
+def test_resolve_remote_owner_name_returns_none_for_non_github_remote(tmp_path: Path):
+    repo = tmp_path / "myrepo"
+    _init_repo_with_origin(repo, origin_url="https://gitlab.com/acme/widget.git")
+    assert gh_mod._resolve_remote_owner_name(repo) is None
+
+
+def test_resolve_remote_owner_name_returns_none_for_non_repo(tmp_path: Path):
+    """A path that isn't a git working tree collapses to ``None``."""
+    not_a_repo = tmp_path / "plain-dir"
+    not_a_repo.mkdir()
+    assert gh_mod._resolve_remote_owner_name(not_a_repo) is None
+
+
+def test_resolve_remote_owner_name_returns_none_when_no_origin(tmp_path: Path):
+    """A git repo with no ``origin`` remote collapses to ``None`` rather
+    than raising — the issue picker just stays hidden in that case."""
+    from git import Repo
+
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    Repo.init(repo, initial_branch="main")
+    assert gh_mod._resolve_remote_owner_name(repo) is None
+
+
 # --- list_issues ---------------------------------------------------------------
 
 
@@ -141,10 +187,16 @@ def _fake_issue_obj(
     number: int,
     title: str = "x",
     html_url: str = "https://github.com/x/y/issues/1",
-    body: str = "",
+    body: str | None = "",
     state: str = "open",
-    pull_request: Any = None,
+    pull_request: Any = UNSET,
 ) -> SimpleNamespace:
+    """Build a fake githubkit issue model.
+
+    Defaults ``pull_request`` to ``UNSET`` (githubkit's missing-field
+    sentinel) — that's what the real API returns for non-PR issues. Tests
+    that simulate a PR override with a populated value.
+    """
     return SimpleNamespace(
         number=number,
         title=title,
@@ -251,6 +303,22 @@ async def test_list_issues_skips_pull_requests(monkeypatch):
     assert issues[0].number == 1
 
 
+async def test_list_issues_keeps_issues_with_unset_pull_request(monkeypatch):
+    """Real issues have ``pull_request == UNSET`` on the githubkit model,
+    not ``None``. Treating ``UNSET`` as "this is a PR" hides every issue
+    in the picker — the exact failure mode that swallowed the picker on
+    real repos.
+    """
+    items = [
+        _fake_issue_obj(number=10, title="Plain issue, UNSET sentinel"),
+        _fake_issue_obj(number=11, title="Issue with explicit None", pull_request=None),
+        _fake_issue_obj(number=12, title="Real PR", pull_request=object()),
+    ]
+    _stub_client(monkeypatch, issues=items)
+    issues = await list_issues(Path("/r"))
+    assert [i.number for i in issues] == [10, 11]
+
+
 async def test_list_issues_skips_malformed_items(monkeypatch):
     """Items missing required attributes are dropped, well-formed ones survive."""
     items = [
@@ -340,3 +408,36 @@ async def test_list_issue_numbers_with_open_pr_returns_empty_on_unexpected_paylo
     """Schema drift: missing keys collapse to empty set rather than crash."""
     _stub_graphql(monkeypatch, payload={"repository": None})
     assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == set()
+
+
+async def test_list_issue_numbers_with_open_pr_skips_malformed_refs(monkeypatch):
+    """Per-PR / per-ref defects don't poison the whole result.
+
+    Whatever the GraphQL response throws at us — a PR with ``null`` for
+    its closing references, a ref missing the ``number`` key, a ref whose
+    ``number`` isn't an int — should be silently dropped while well-formed
+    sibling entries still aggregate.
+    """
+    payload = {
+        "repository": {
+            "pullRequests": {
+                "nodes": [
+                    {"closingIssuesReferences": None},
+                    {"closingIssuesReferences": {"nodes": [{"not_number": 99}, {"number": "bad"}]}},
+                    {"closingIssuesReferences": {"nodes": "not a list"}},
+                    {"closingIssuesReferences": {"nodes": [{"number": 5}, None, {"number": 7}]}},
+                ],
+            },
+        },
+    }
+    _stub_graphql(monkeypatch, payload=payload)
+    assert await gh_mod.list_issue_numbers_with_open_pr(Path("/r")) == {5, 7}
+
+
+async def test_list_issues_handles_none_body(monkeypatch):
+    """GitHub returns ``body: null`` for empty descriptions; coerce to ``""``."""
+    items = [_fake_issue_obj(number=1, title="No body", body=None)]
+    _stub_client(monkeypatch, issues=items)
+    issues = await list_issues(Path("/r"))
+    assert len(issues) == 1
+    assert issues[0].body == ""
