@@ -7,7 +7,7 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
-from chud.types import KEY_EFFORT, SessionState
+from chud.types import KEY_EFFORT, KEY_RUN_MODE, SessionState
 
 
 def data_root() -> Path:
@@ -83,6 +83,17 @@ def user_default_effort() -> str | None:
     from chud.options import normalize_effort
 
     return normalize_effort(load_user_config().get(KEY_EFFORT))
+
+
+def user_default_run_mode() -> str:
+    """Persisted default permission mode for new sessions.
+
+    Falls back to ``RunMode``'s default (``"full_auto"``) when unset,
+    unknown, or wrong-typed — same contract as ``normalize_run_mode``.
+    """
+    from chud.options import normalize_run_mode
+
+    return normalize_run_mode(load_user_config().get(KEY_RUN_MODE))
 
 
 def claude_settings_effort() -> str | None:

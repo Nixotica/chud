@@ -4,10 +4,13 @@ from chud.options import (
     EFFORT_VALUES,
     OPT_MAKE_DRAFT_PR,
     OPT_SELF_CLEANUP,
+    RUN_MODE_DEFAULT,
+    RUN_MODE_VALUES,
     SESSION_OPTIONS,
     default_options,
     normalize_effort,
     normalize_options,
+    normalize_run_mode,
 )
 
 
@@ -67,3 +70,27 @@ def test_normalize_effort_rejects_unknown():
     assert normalize_effort("") is None
     assert normalize_effort(42) is None
     assert normalize_effort({"effort": "high"}) is None
+
+
+def test_run_mode_values_contains_three_modes():
+    assert set(RUN_MODE_VALUES) == {"full_auto", "default", "low_perms"}
+
+
+def test_run_mode_default_is_full_auto():
+    assert RUN_MODE_DEFAULT == "full_auto"
+
+
+def test_normalize_run_mode_accepts_known_values():
+    for mode in RUN_MODE_VALUES:
+        assert normalize_run_mode(mode) == mode
+
+
+def test_normalize_run_mode_handles_none_with_full_auto():
+    assert normalize_run_mode(None) == "full_auto"
+
+
+def test_normalize_run_mode_rejects_unknown_with_full_auto():
+    assert normalize_run_mode("bypass") == "full_auto"
+    assert normalize_run_mode("") == "full_auto"
+    assert normalize_run_mode(42) == "full_auto"
+    assert normalize_run_mode({"run_mode": "low_perms"}) == "full_auto"

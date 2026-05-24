@@ -27,7 +27,7 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
-from chud.options import EffortLevel
+from chud.options import LOW_PERMS_GATED_TOOLS, EffortLevel, normalize_run_mode
 from chud.state import worktrees_root
 from chud.tools import AttachCallback, build_chud_mcp_server
 from chud.types import Event, EventKind, SessionState, SessionStatus
@@ -54,12 +54,20 @@ class AgentSession:
         launch_cwd: Path | None = None,
         attach_callback: AttachCallback | None = None,
         effort: str | None = None,
+        run_mode: str | None = None,
     ) -> None:
         self.state = state
         self.model = model
         self._launch_cwd = launch_cwd
         self._attach_callback = attach_callback
         self.effort = effort
+        # Resolve to a known choice. ``run_mode`` arg overrides the value
+        # carried on ``state.run_mode`` (callers that route everything through
+        # the manager will pass them in sync; the kwarg makes it explicit for
+        # tests that build an AgentSession directly). Single source of truth
+        # lives on ``state.run_mode`` so it round-trips through persistence.
+        raw_mode = run_mode if run_mode is not None else state.run_mode
+        self.state.run_mode = normalize_run_mode(raw_mode)
         self.events: asyncio.Queue[Event] = asyncio.Queue()
         self._client: ClaudeSDKClient | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -71,6 +79,21 @@ class AgentSession:
             asyncio.Future[PermissionResultAllow | PermissionResultDeny] | None
         ) = None
         self._pending_question_input: dict[str, Any] | None = None
+        # Single-slot future for per-tool permission prompts (``default`` and
+        # ``low_perms`` modes). Mirrors the ``_plan_decision`` /
+        # ``_question_decision`` pattern: at most one in-flight prompt; if a
+        # second arrives we resolve the prior with ``Deny("superseded")``.
+        self._permission_decision: (
+            asyncio.Future[PermissionResultAllow | PermissionResultDeny] | None
+        ) = None
+        self._pending_permission: dict[str, Any] | None = None
+        # Set when the user denies a plan or tool call. When the agent then
+        # ends its turn (ResultMessage), we route to AWAITING_USER instead of
+        # DONE so the user can either reply or kill the session — never the
+        # auto-PR / cleanup pipeline, which would otherwise treat a deny-driven
+        # giveup as a successful finish. Cleared when the user sends a fresh
+        # message (start of a new turn).
+        self._deny_pending: bool = False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -152,6 +175,11 @@ class AgentSession:
         self._question_decision = None
         self._pending_question_input = None
 
+        if self._permission_decision is not None and not self._permission_decision.done():
+            self._permission_decision.set_result(PermissionResultDeny(message="Session stopped."))
+        self._permission_decision = None
+        self._pending_permission = None
+
         if self._client is not None:
             with contextlib.suppress(Exception):
                 await self._client.interrupt()
@@ -176,15 +204,31 @@ class AgentSession:
         if self.state.status == SessionStatus.AWAITING_USER:
             await self._set_status(SessionStatus.EXECUTING)
         self.state.pending_question = None
+        self._deny_pending = False
         await self._client.query(text)
 
     async def approve_plan(self) -> None:
-        """Approve the pending plan: switch to acceptEdits and let ExitPlanMode through."""
+        """Approve the pending plan and flip the SDK to the chosen permission mode.
+
+        ``run_mode`` determines the target SDK mode:
+          - ``full_auto`` and ``low_perms`` → ``acceptEdits``. ``low_perms``
+            relies on chud's PreToolUse hook to surface modals for each
+            dangerous tool; leaving the SDK in ``acceptEdits`` keeps the SDK
+            from double-prompting.
+          - ``default`` → ``default``. The SDK then respects the user's
+            ``~/.claude/settings.json`` allow/deny rules and routes the
+            fallthrough to chud's ``can_use_tool`` callback, which surfaces
+            a PermissionModal.
+        """
         if self._plan_decision is None or self._plan_decision.done():
             log.warning("approve_plan called with no pending decision (session %s)", self.state.id)
             return
         assert self._client is not None
-        await self._client.set_permission_mode("acceptEdits")
+        # Map chud RunMode → SDK permission_mode. Note: both literals happen
+        # to be the string ``"default"`` on the ``default`` branch — one is
+        # chud's RunMode value, the other is the SDK's permission_mode value.
+        sdk_mode = "default" if self.state.run_mode == "default" else "acceptEdits"
+        await self._client.set_permission_mode(sdk_mode)
         # Persist the approved plan text so downstream consumers (PR title/body)
         # can read it later, including across TUI restarts.
         if self._pending_plan_text:
@@ -201,6 +245,7 @@ class AgentSession:
         self._plan_decision.set_result(PermissionResultDeny(message=reason))
         self._plan_decision = None
         self._pending_plan_text = None
+        self._deny_pending = True
         await self._set_status(SessionStatus.PLANNING)
 
     async def answer_question(self, answer_text: str) -> None:
@@ -219,6 +264,35 @@ class AgentSession:
         self._question_decision = None
         self._pending_question_input = None
         await self._set_status(SessionStatus.EXECUTING)
+
+    async def approve_tool(self) -> None:
+        """Resolve a pending per-tool permission prompt with allow.
+
+        Used by both ``default`` mode (via ``can_use_tool``) and ``low_perms``
+        mode (via ``PreToolUse`` hook). Status stays at EXECUTING — unlike
+        ``AskUserQuestion``, permission prompts don't represent the agent
+        going idle; the SDK is mid-tool-call awaiting our decision.
+        """
+        if self._permission_decision is None or self._permission_decision.done():
+            log.warning("approve_tool called with no pending decision (session %s)", self.state.id)
+            return
+        self._permission_decision.set_result(PermissionResultAllow())
+        self._permission_decision = None
+        self._pending_permission = None
+
+    async def deny_tool(self, reason: str = "User denied.") -> None:
+        """Resolve a pending per-tool permission prompt with deny.
+
+        ``reason`` is forwarded to the agent as the deny message, mirroring
+        ``reject_plan``'s free-text feedback channel.
+        """
+        if self._permission_decision is None or self._permission_decision.done():
+            log.warning("deny_tool called with no pending decision (session %s)", self.state.id)
+            return
+        self._permission_decision.set_result(PermissionResultDeny(message=reason))
+        self._permission_decision = None
+        self._pending_permission = None
+        self._deny_pending = True
 
     # ------------------------------------------------------------------ SDK callbacks
 
@@ -254,7 +328,39 @@ class AgentSession:
         if reason is not None:
             return PermissionResultDeny(message=reason)
 
+        # ``default`` mode: after plan approval the SDK is in its ``default``
+        # permission mode, which routes anything not auto-allowed by user
+        # settings through this callback. Surface a modal for it; ``low_perms``
+        # uses the PreToolUse hook instead (so this branch stays a no-op).
+        if self.state.run_mode == "default" and self.state.status in (
+            SessionStatus.EXECUTING,
+            SessionStatus.AWAITING_USER,
+        ):
+            return await self._await_permission(tool_name, tool_input)
+
         return PermissionResultAllow()
+
+    async def _await_permission(
+        self, tool_name: str, tool_input: dict[str, Any]
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """Surface a PermissionModal and block until the user resolves it.
+
+        Single-slot future, mirroring ``_plan_decision`` /
+        ``_question_decision``. If a request arrives while another is
+        pending we resolve the prior with ``Deny("superseded")`` and log;
+        the SDK serialises tool calls per session in practice so this is
+        defensive.
+        """
+        if self._permission_decision is not None and not self._permission_decision.done():
+            log.warning("permission decision superseded for session %s", self.state.id)
+            self._permission_decision.set_result(PermissionResultDeny(message="superseded"))
+        self._pending_permission = {"tool_name": tool_name, "tool_input": dict(tool_input)}
+        self._permission_decision = asyncio.get_event_loop().create_future()
+        await self._emit(
+            EventKind.PERMISSION_REQUESTED,
+            {"tool_name": tool_name, "tool_input": dict(tool_input)},
+        )
+        return await self._permission_decision
 
     # Edit/Write/NotebookEdit expose the target path in their tool input under
     # these keys; we resolve and check it against attached worktrees.
@@ -344,19 +450,45 @@ class AgentSession:
         Unlike ``can_use_tool``, PreToolUse hooks fire even when permission_mode
         is ``acceptEdits`` — so this is the gate that actually runs once the
         user approves a plan.
+
+        ``low_perms`` mode also uses this hook to unconditionally prompt for
+        every Edit/Write/NotebookEdit/Bash, even when the user's
+        ``~/.claude/settings.json`` would have auto-allowed them.
         """
         tool_name = cast(str, input_data.get("tool_name", ""))
         tool_input = cast(dict[str, Any], input_data.get("tool_input", {}))
         reason = self._check_filesystem_access(tool_name, tool_input)
-        if reason is None:
-            return {}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
+        if reason is not None:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
             }
-        }
+
+        if (
+            self.state.run_mode == "low_perms"
+            and tool_name in LOW_PERMS_GATED_TOOLS
+            and self.state.status in (SessionStatus.EXECUTING, SessionStatus.AWAITING_USER)
+        ):
+            result = await self._await_permission(tool_name, tool_input)
+            if isinstance(result, PermissionResultDeny):
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": result.message or "User denied.",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                }
+            }
+
+        return {}
 
     async def _on_stop_hook(
         self,
@@ -438,7 +570,26 @@ class AgentSession:
             # Full ResultMessage stats stay in chud.log; the UI just sees the
             # status transition emitted by _set_status.
             log.debug("ResultMessage for session %s: %s", self.state.id, _stringify(msg))
-            await self._set_status(SessionStatus.DONE)
+            if self._deny_pending:
+                # The agent ended its turn after the user denied an edit or
+                # rejected a plan. Don't treat this as a successful completion
+                # (which would auto-publish a PR / trigger cleanup); park the
+                # session in AWAITING_USER so the user can either reply with a
+                # follow-up or kill the session explicitly.
+                self._deny_pending = False
+                await self._set_status(SessionStatus.AWAITING_USER)
+                await self._emit(
+                    EventKind.NEEDS_USER_INPUT,
+                    {
+                        "reason": "deny_followup",
+                        "message": (
+                            "Agent ended its turn after your denial. Send a new "
+                            "message to continue, or kill the session."
+                        ),
+                    },
+                )
+            else:
+                await self._set_status(SessionStatus.DONE)
         else:
             log.warning("unknown SDK message type %s", type(msg).__name__)
             await self._emit(

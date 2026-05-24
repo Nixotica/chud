@@ -23,6 +23,7 @@ KEY_OPTIONS = "options"
 KEY_APPROVED_PLAN = "approved_plan"
 KEY_EFFORT = "effort"
 KEY_ISSUE_NUMBER = "issue_number"
+KEY_RUN_MODE = "run_mode"
 
 
 class SessionStatus(StrEnum):
@@ -77,6 +78,11 @@ class SessionState:
     # the user picks an issue in the new-session modal; consumed by callers
     # that want to surface "an existing chud is working on issue #N" hints.
     issue_number: int | None = None
+    # Permission-mode policy chosen at session creation. One of the
+    # ``RunMode`` literals (``options.RUN_MODE_VALUES``). Controls what the
+    # session flips the SDK's ``permission_mode`` to after plan approval and
+    # whether chud surfaces per-tool permission modals.
+    run_mode: str = "full_auto"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,12 +98,13 @@ class SessionState:
             KEY_APPROVED_PLAN: self.approved_plan,
             KEY_EFFORT: self.effort,
             KEY_ISSUE_NUMBER: self.issue_number,
+            KEY_RUN_MODE: self.run_mode,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionState:
         # Imported lazily to avoid a circular import at module load.
-        from chud.options import normalize_effort, normalize_options
+        from chud.options import normalize_effort, normalize_options, normalize_run_mode
 
         return cls(
             id=d[KEY_ID],
@@ -114,6 +121,7 @@ class SessionState:
             approved_plan=d.get(KEY_APPROVED_PLAN),
             effort=normalize_effort(d.get(KEY_EFFORT)),
             issue_number=d.get(KEY_ISSUE_NUMBER),
+            run_mode=normalize_run_mode(d.get(KEY_RUN_MODE)),
         )
 
 
@@ -123,6 +131,7 @@ class EventKind(StrEnum):
     PLAN_PROPOSED = "plan_proposed"
     NEEDS_USER_INPUT = "needs_user_input"
     QUESTION_ASKED = "question_asked"
+    PERMISSION_REQUESTED = "permission_requested"
     REPO_ATTACHED = "repo_attached"
     UNKNOWN_MESSAGE = "unknown_message"
     ERROR = "error"

@@ -23,7 +23,8 @@ from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
-from chud.widgets.plan_modal import PlanApprovalModal
+from chud.widgets.permission_modal import PermissionDecision, PermissionModal
+from chud.widgets.plan_modal import PlanApprovalModal, PlanDecision
 from chud.widgets.pr_review_modal import PRReviewModal, PRReviewResult
 from chud.widgets.question_modal import QuestionModal
 from chud.widgets.session_list import SessionListView, SessionRow
@@ -33,7 +34,7 @@ from chud.worktree import detect_cwd_repo
 
 log = logging.getLogger(__name__)
 
-PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question"]
+PromptKind = Literal["plan", "pr_review", "cleanup", "input", "question", "permission"]
 
 DevHook = Callable[["ChudApp"], Awaitable[None]]
 
@@ -90,6 +91,7 @@ class ChudApp(App[None]):
         self._open_cleanup_modals: set[str] = set()
         self._open_pr_review_modals: set[str] = set()
         self._open_question_modals: set[str] = set()
+        self._open_permission_modals: set[str] = set()
         # FIFO queue of blocking user-input requests from agents. The first
         # request is shown until resolved; later requests wait their turn so a
         # newly-arrived modal can't cover one the user hasn't answered yet.
@@ -266,6 +268,7 @@ class ChudApp(App[None]):
                 options=result.options,
                 effort=result.effort,
                 issue_number=result.issue.number if result.issue is not None else None,
+                run_mode=result.run_mode,
             )
         except Exception as e:
             log.exception("create_session failed")
@@ -321,11 +324,20 @@ class ChudApp(App[None]):
         sid = self._selected_session_id
         if sid is None:
             return
+        await self._kill_session_and_cleanup(sid)
+
+    async def _kill_session_and_cleanup(self, sid: str) -> None:
+        """Kill ``sid`` and reset all UI/state slots that referenced it.
+
+        Shared by the ``x`` keybinding, the cleanup-modal flow, and the new
+        Kill buttons on the plan / permission modals so they can't drift apart.
+        """
         await self.manager.kill_session(sid)
         self.query_one(SessionListView).remove_session(sid)
         self._event_log.pop(sid, None)
-        self._selected_session_id = None
-        self.query_one(SessionView).show_session(None)
+        if self._selected_session_id == sid:
+            self._selected_session_id = None
+            self.query_one(SessionView).show_session(None)
         self._drop_session_prompts(sid)
 
     # ------------------------------------------------------------------ list selection
@@ -449,6 +461,19 @@ class ChudApp(App[None]):
                     payload={"input": event.payload.get("input", {})},
                 )
             )
+        elif event.kind == EventKind.PERMISSION_REQUESTED:
+            # The session emits a fresh dict; copy here is the only one needed
+            # to isolate the modal's view of tool_input from the SDK round-trip.
+            self._enqueue_prompt(
+                PromptRequest(
+                    session_id=event.session_id,
+                    kind="permission",
+                    payload={
+                        "tool_name": event.payload.get("tool_name", ""),
+                        "tool_input": dict(event.payload.get("tool_input", {})),
+                    },
+                )
+            )
         elif event.kind == EventKind.CLEANUP_REQUESTED:
             self._enqueue_prompt(
                 PromptRequest(
@@ -545,6 +570,8 @@ class ChudApp(App[None]):
                 self._show_input_focus(req)
             elif req.kind == "question":
                 self._show_question_modal(req)
+            elif req.kind == "permission":
+                self._show_permission_modal(req)
             return
 
     def _resolve_active_prompt(self, req: PromptRequest) -> None:
@@ -593,13 +620,19 @@ class ChudApp(App[None]):
                 result = await self.push_screen_wait(
                     PlanApprovalModal(session_id=session_id, plan_text=plan_text)
                 )
+                if isinstance(result, PlanDecision) and result.action == "kill":
+                    # Kill resolves the session's pending plan future via
+                    # AgentSession.stop() before tearing the session down, so
+                    # the SDK doesn't see a stranded control request.
+                    await self._kill_session_and_cleanup(session_id)
+                    return
                 sess = self.manager.sessions.get(session_id)
                 if sess is None:
                     return
-                if result is True:
+                if isinstance(result, PlanDecision) and result.action == "approve":
                     await sess.approve_plan()
-                elif isinstance(result, str) and result:
-                    await sess.reject_plan(reason=result)
+                elif isinstance(result, PlanDecision) and result.reason:
+                    await sess.reject_plan(reason=result.reason)
                 else:
                     await sess.reject_plan()
             finally:
@@ -628,15 +661,16 @@ class ChudApp(App[None]):
                 )
                 if not confirmed:
                     return
+                # Cleanup variant — kill_session(cleanup_worktrees=True) tears
+                # down the worktree as well as the in-memory session. We then
+                # mirror the same UI/state reset the shared helper does, since
+                # the helper doesn't accept the cleanup flag.
                 await self.manager.kill_session(session_id, cleanup_worktrees=True)
                 self.query_one(SessionListView).remove_session(session_id)
                 self._event_log.pop(session_id, None)
                 if self._selected_session_id == session_id:
                     self._selected_session_id = None
                     self.query_one(SessionView).show_session(None)
-                # Drop any other queued prompts (e.g. a stale PLAN_PROPOSED)
-                # for the now-killed session so the queue doesn't try to
-                # re-show them.
                 self._drop_session_prompts(session_id)
             finally:
                 self._open_cleanup_modals.discard(session_id)
@@ -715,6 +749,51 @@ class ChudApp(App[None]):
                     await sess.answer_question("(user dismissed the question without answering)")
             finally:
                 self._open_question_modals.discard(session_id)
+                self._resolve_active_prompt(req)
+
+        self.run_worker(show_modal(), exclusive=False)
+
+    def _show_permission_modal(self, req: PromptRequest) -> None:
+        session_id = req.session_id
+        tool_name = str(req.payload.get("tool_name", ""))
+        # No defensive copy: the dict was already isolated when the event
+        # was enqueued in ``_on_event``.
+        tool_input = req.payload.get("tool_input", {})
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        if session_id in self._open_permission_modals:
+            self._resolve_active_prompt(req)
+            return
+        self._open_permission_modals.add(session_id)
+
+        async def show_modal() -> None:
+            try:
+                result = await self.push_screen_wait(
+                    PermissionModal(
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                    )
+                )
+                if isinstance(result, PermissionDecision) and result.action == "kill":
+                    # AgentSession.stop() resolves the pending permission
+                    # future with a Deny so the SDK doesn't hang on the
+                    # in-flight tool call.
+                    await self._kill_session_and_cleanup(session_id)
+                    return
+                sess = self.manager.sessions.get(session_id)
+                if sess is None:
+                    return
+                # ``None`` (unexpected dismissal) falls through to a plain
+                # deny so the agent gets a deterministic answer either way.
+                if isinstance(result, PermissionDecision) and result.action == "approve":
+                    await sess.approve_tool()
+                elif isinstance(result, PermissionDecision) and result.reason:
+                    await sess.deny_tool(reason=result.reason)
+                else:
+                    await sess.deny_tool()
+            finally:
+                self._open_permission_modals.discard(session_id)
                 self._resolve_active_prompt(req)
 
         self.run_worker(show_modal(), exclusive=False)
