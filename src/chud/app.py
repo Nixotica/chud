@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -102,9 +103,9 @@ class ChudApp(App[None]):
         self._user_modal_depth: int = 0
         # Launch-time repo + cached open issues for the new-session modal.
         # Populated in on_mount() and refreshed in the background so pressing
-        # `n` doesn't pay for a `gh issue list` shell-out each time.
+        # `n` doesn't pay for a GitHub API round-trip each time.
         # ``_issues_cache`` mirrors ``_fetch_issues_for_modal``'s contract:
-        # ``None`` means "hide picker" (no gh / no repo / first refresh
+        # ``None`` means "hide picker" (no auth / no repo / first refresh
         # in-flight / no open issues), non-empty list means ready.
         # ``_issues_with_pr_cache`` carries the set of issue numbers that
         # have an open PR linked (closing-keyword or Development-sidebar);
@@ -178,7 +179,7 @@ class ChudApp(App[None]):
             return
         self._issues_cache = await self._fetch_issues_for_modal(self._launch_repo)
         # Only fetch the PR-linked set if we actually have issues (otherwise
-        # there's nothing to filter and the second subprocess is wasted).
+        # there's nothing to filter and the GraphQL round-trip is wasted).
         if self._issues_cache:
             self._issues_with_pr_cache = await gh_mod.list_issue_numbers_with_open_pr(
                 self._launch_repo
@@ -811,11 +812,28 @@ class ChudApp(App[None]):
             self.query_one(SessionView).input.focus()
 
 
+def _muzzle_credential_prompts() -> None:
+    """Stop sub-``git`` invocations from blocking on a credential prompt.
+
+    The TUI runs in raw mode, so any tool that tries to read a password
+    from the controlling TTY hangs the screen. Setting these env vars at
+    startup makes ``git push`` / ``git fetch`` / ssh fail fast with an
+    auth error instead — that surfaces as a ``PR_FAILED`` toast or a
+    log-warn fetch fallthrough, both of which the UI handles gracefully.
+    """
+    os.environ["GIT_TERMINAL_PROMPT"] = "0"
+    os.environ.setdefault("GIT_ASKPASS", "/bin/true")
+    os.environ.setdefault("SSH_ASKPASS", "/bin/true")
+    os.environ.setdefault("SSH_ASKPASS_REQUIRE", "never")
+
+
 def main() -> int:
     import argparse
 
     from chud import __version__
     from chud.dev import SCENARIOS
+
+    _muzzle_credential_prompts()
 
     parser = argparse.ArgumentParser(prog="chud")
     parser.add_argument(

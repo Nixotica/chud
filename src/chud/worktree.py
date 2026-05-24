@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
+import httpx
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+from git.exc import GitCommandError
+from gitdb.exc import BadName, BadObject
+from githubkit.exception import GitHubException
+
+from chud.gh import _get_client, _resolve_remote_owner_name
 from chud.settings import get_branch_prefix, get_include_slug
 from chud.state import worktrees_root
 from chud.types import SessionState, Worktree
@@ -50,22 +55,19 @@ def _slugify(text: str, max_len: int = _SLUG_MAX_LEN) -> str:
 def is_git_repo(path: Path) -> bool:
     if not path.exists():
         return False
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    try:
+        Repo(path, search_parent_directories=True)
+        return True
+    except (InvalidGitRepositoryError, NoSuchPathError):
+        return False
 
 
 def repo_toplevel(path: Path) -> Path:
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return Path(result.stdout.strip())
+    repo = Repo(path, search_parent_directories=True)
+    top = repo.working_tree_dir
+    if top is None:
+        raise WorktreeError(f"could not resolve toplevel for {path}")
+    return Path(top)
 
 
 def default_base_branch(repo_path: Path) -> str:
@@ -73,62 +75,65 @@ def default_base_branch(repo_path: Path) -> str:
 
     Order of preference:
 
-    1. ``git symbolic-ref --short refs/remotes/origin/HEAD`` — the canonical
-       answer when the clone has been initialized with a remote HEAD.
-    2. ``gh repo view --json defaultBranchRef`` — covers the case where the
-       symbolic-ref isn't set locally but ``gh`` is on PATH and authed.
+    1. ``origin/HEAD`` symbolic ref — the canonical answer when the clone
+       has been initialized with a remote HEAD.
+    2. GitHub REST ``repos.get`` lookup — covers the case where the
+       symbolic ref isn't set locally but we have a token + GitHub remote.
     3. ``"main"`` — last-resort fallback so callers always get a string.
 
     The returned name is *unqualified* (``main``, not ``origin/main``); callers
     decide whether to look it up under ``refs/remotes/origin/`` or
     ``refs/heads/``.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        out = result.stdout.strip()
-        if "/" in out:
-            return out.split("/", 1)[1]
+    try:
+        repo = Repo(repo_path, search_parent_directories=True)
+        head_ref = repo.refs["origin/HEAD"]
+        target = head_ref.reference  # type: ignore[attr-defined]
+        # ``refs/remotes/origin/main`` → ``main``
+        if "/" in target.name:
+            return target.name.split("/", 1)[1]
+        return target.name
+    except (KeyError, IndexError, AttributeError, InvalidGitRepositoryError, NoSuchPathError):
+        pass
 
-    if shutil.which("gh") is not None:
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
-            capture_output=True,
-            text=True,
-            cwd=str(repo_path),
-        )
-        if result.returncode == 0:
-            out = result.stdout.strip()
-            if out:
-                return out
+    client = _get_client()
+    if client is not None:
+        owner_name = _resolve_remote_owner_name(repo_path)
+        if owner_name is not None:
+            owner, name = owner_name
+            try:
+                # The httpx client under the hood is async-only by default;
+                # using the sync companion keeps this function sync at the
+                # call sites in WorktreeManager. ``GitHub.rest.repos.get``
+                # is a regular method that performs a blocking HTTP call.
+                resp = client.rest.repos.get(owner, name)
+                branch = getattr(resp.parsed_data, "default_branch", None)
+                if branch:
+                    return str(branch)
+            except (GitHubException, httpx.HTTPError) as e:
+                log.warning("repos.get default-branch lookup failed for %s/%s: %s", owner, name, e)
 
     return "main"
 
 
-def _ref_exists(repo_path: Path, ref: str) -> bool:
-    return (
-        subprocess.run(
-            ["git", "-C", str(repo_path), "rev-parse", "--verify", ref],
-            capture_output=True,
-        ).returncode
-        == 0
-    )
+def _ref_exists(repo: Repo, ref: str) -> bool:
+    try:
+        repo.commit(ref)
+        return True
+    except (ValueError, GitCommandError, BadName, BadObject, KeyError, AttributeError):
+        return False
 
 
 def detect_cwd_repo() -> Path | None:
     """Toplevel of the git repo containing the current working directory.
 
-    Returns ``None`` if CWD is not inside a git repo, if git isn't on PATH,
-    or if CWD itself isn't a real directory anymore. Used by the new-session
-    flow to auto-attach the obvious repo without making the user type its
-    path.
+    Returns ``None`` if CWD is not inside a git repo or if CWD itself
+    isn't a real directory anymore. Used by the new-session flow to
+    auto-attach the obvious repo without making the user type its path.
     """
     try:
         return repo_toplevel(Path.cwd())
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+    except (InvalidGitRepositoryError, NoSuchPathError, WorktreeError, OSError):
         return None
 
 
@@ -173,37 +178,31 @@ class WorktreeManager:
         else:
             branch = f"{prefix}{self.session.id}"
 
-        branch_exists = (
-            subprocess.run(
-                ["git", "-C", str(toplevel), "rev-parse", "--verify", branch],
-                capture_output=True,
-            ).returncode
-            == 0
-        )
+        toplevel_repo = Repo(toplevel)
+        branch_exists = _ref_exists(toplevel_repo, branch)
 
         # Drop stale "prunable" worktree entries (directory gone, .git/worktrees
         # metadata still present) before adding. Without this, a previous chud
         # session whose workspace was rm'd outside `git worktree remove` would
         # keep the branch "checked out" at a missing path and `git worktree
         # add` would fail with "<branch> is already checked out at <path>".
-        subprocess.run(
-            ["git", "-C", str(toplevel), "worktree", "prune"],
-            capture_output=True,
-        )
+        try:
+            toplevel_repo.git.worktree("prune")
+        except GitCommandError as e:
+            log.debug("git worktree prune failed in %s (continuing): %s", toplevel, e)
 
-        cmd = ["git", "-C", str(toplevel), "worktree", "add"]
-        if branch_exists:
-            # Re-attach: never silently rewrite an existing chud branch — that
-            # would clobber a previous session's in-progress work. Just check
-            # the branch out at its current tip.
-            cmd += [str(worktree_path), branch]
-        else:
-            base_ref = self._resolve_clean_base_ref(toplevel)
-            cmd += [str(worktree_path), "-b", branch, base_ref]
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise WorktreeError(f"git worktree add failed for {toplevel}: {result.stderr.strip()}")
+        try:
+            if branch_exists:
+                # Re-attach: never silently rewrite an existing chud branch — that
+                # would clobber a previous session's in-progress work. Just check
+                # the branch out at its current tip.
+                toplevel_repo.git.worktree("add", str(worktree_path), branch)
+            else:
+                base_ref = self._resolve_clean_base_ref(toplevel)
+                toplevel_repo.git.worktree("add", str(worktree_path), "-b", branch, base_ref)
+        except GitCommandError as e:
+            stderr = (e.stderr or "").strip() or str(e)
+            raise WorktreeError(f"git worktree add failed for {toplevel}: {stderr}") from e
 
         start_head = self._capture_head(worktree_path)
         wt = Worktree(
@@ -236,23 +235,16 @@ class WorktreeManager:
            the explicit failure.
         """
         base = default_base_branch(toplevel)
+        repo = Repo(toplevel)
 
-        fetch = subprocess.run(
-            ["git", "-C", str(toplevel), "fetch", "origin", base],
-            capture_output=True,
-            text=True,
-        )
-        if fetch.returncode != 0:
-            log.warning(
-                "git fetch origin %s failed in %s: %s",
-                base,
-                toplevel,
-                fetch.stderr.strip(),
-            )
+        try:
+            repo.remotes.origin.fetch(base)
+        except (GitCommandError, AttributeError, ValueError) as e:
+            log.warning("git fetch origin %s failed in %s: %s", base, toplevel, e)
 
-        if _ref_exists(toplevel, f"refs/remotes/origin/{base}"):
+        if _ref_exists(repo, f"refs/remotes/origin/{base}"):
             return f"origin/{base}"
-        if _ref_exists(toplevel, f"refs/heads/{base}"):
+        if _ref_exists(repo, f"refs/heads/{base}"):
             return base
         raise WorktreeError(
             f"could not resolve a base ref for new chud branch in {toplevel}: "
@@ -261,28 +253,36 @@ class WorktreeManager:
 
     @staticmethod
     def _capture_head(worktree_path: Path) -> str | None:
-        result = subprocess.run(
-            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+        try:
+            return Repo(worktree_path).head.commit.hexsha
+        except (
+            ValueError,
+            GitCommandError,
+            BadName,
+            BadObject,
+            AttributeError,
+            InvalidGitRepositoryError,
+        ):
             return None
-        return result.stdout.strip() or None
 
     def detach_repo(self, repo_key: str, force: bool = False) -> None:
         wt = self.session.attached_repos.get(repo_key)
         if wt is None:
             return
 
-        cmd = ["git", "-C", str(wt.repo_path), "worktree", "remove", str(wt.worktree_path)]
-        if force:
-            cmd.append("--force")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0 and not force:
-            raise WorktreeError(
-                f"git worktree remove failed: {result.stderr.strip()} (pass force=True to discard)"
-            )
+        repo = Repo(wt.repo_path)
+        try:
+            if force:
+                repo.git.worktree("remove", "--force", str(wt.worktree_path))
+            else:
+                repo.git.worktree("remove", str(wt.worktree_path))
+        except GitCommandError as e:
+            if not force:
+                stderr = (e.stderr or "").strip() or str(e)
+                raise WorktreeError(
+                    f"git worktree remove failed: {stderr} (pass force=True to discard)"
+                ) from e
+            # On force, swallow — we're trying our best to clean up.
 
         del self.session.attached_repos[repo_key]
 
@@ -305,14 +305,11 @@ class WorktreeManager:
         repo_path = wt.repo_path
         branch = wt.branch
         self.detach_repo(repo_key, force=True)
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "branch", "-D", branch],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "not found" not in stderr.lower():
+        try:
+            Repo(repo_path).git.branch("-D", branch)
+        except GitCommandError as e:
+            stderr = (e.stderr or "").strip().lower() or str(e).lower()
+            if "not found" not in stderr:
                 log.warning("git branch -D %s failed in %s: %s", branch, repo_path, stderr)
 
     def cleanup_worktrees(self) -> None:

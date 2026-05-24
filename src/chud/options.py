@@ -86,7 +86,7 @@ SESSION_OPTIONS: tuple[SessionOption, ...] = (
         label="Open draft PR(s) on completion",
         description=(
             "When the session finishes, push each worktree branch and open a "
-            "draft pull request via the gh CLI."
+            "draft pull request on GitHub."
         ),
         default=False,
     ),

@@ -185,19 +185,19 @@ class SessionManager:
                 and not self._tui_focused
             )
             if should_notify:
-                desktop_notify("chud", f"Session {event.session_id[:6]} finished")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} finished")
             if status == SessionStatus.DONE.value:
                 await self._on_session_done(sess)
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} needs input")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} needs input")
         elif event.kind == EventKind.PLAN_PROPOSED:
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} has a plan to review")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} has a plan to review")
         elif event.kind == EventKind.ERROR:
             self._persist()
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} errored")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} errored")
 
     # ------------------------------------------------------------------ DONE side-effects
 
@@ -271,8 +271,7 @@ class SessionManager:
                 )
 
         # Reuse the same task-tracking slot so kill_session cancels an
-        # in-flight publish-then-cleanup chain in O(1), exactly like the
-        # legacy ``_finish_done`` task did.
+        # in-flight publish-then-cleanup chain in O(1).
         task = asyncio.create_task(runner(), name=f"chud-pr-review-{session_id}")
         self._pr_tasks[session_id] = task
         task.add_done_callback(lambda _t, s=session_id: self._pr_tasks.pop(s, None))
