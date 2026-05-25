@@ -37,9 +37,20 @@ class SessionView(Vertical):
     SessionView #transcript {
         border: solid $primary-background;
         padding: 0 1;
+        background: transparent;
+    }
+    SessionView #transcript:focus {
+        background-tint: transparent;
     }
     SessionView #input {
         margin-top: 1;
+        background: transparent;
+    }
+    SessionView #input:focus {
+        background-tint: transparent;
+    }
+    SessionView #input:disabled {
+        opacity: 1;
     }
     """
 
