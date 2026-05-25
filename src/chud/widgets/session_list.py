@@ -65,6 +65,12 @@ class SessionListView(VerticalScroll):
         border-right: solid $accent;
         padding: 0 1;
     }
+    SessionListView ListView {
+        background: transparent;
+    }
+    SessionListView ListView:focus {
+        background-tint: transparent;
+    }
     """
 
     BINDINGS = [

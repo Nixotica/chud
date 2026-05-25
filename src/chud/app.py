@@ -12,7 +12,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, ScrollableContainer
 from textual.widget import Widget
-from textual.widgets import Footer, Header, Input, ListView, RichLog
+from textual.widgets import Header, Input, ListView, RichLog
 
 from chud import gh as gh_mod
 from chud import state as state_mod
@@ -21,6 +21,7 @@ from chud.manager import SessionManager
 from chud.markup import TextError, TextMuted, TextSuccess
 from chud.types import Event, EventKind, SessionStatus
 from chud.widgets.cleanup_confirmation_modal import CleanupConfirmationModal
+from chud.widgets.footer import ChudFooter
 from chud.widgets.new_session_modal import NewSessionModal, NewSessionResult
 from chud.widgets.permission_modal import PermissionDecision, PermissionModal
 from chud.widgets.plan_modal import PlanApprovalModal, PlanDecision
@@ -80,9 +81,6 @@ class ChudApp(App[None]):
     Header {
         background: transparent;
     }
-    Footer {
-        background: transparent;
-    }
     Horizontal#main {
         height: 1fr;
     }
@@ -92,7 +90,14 @@ class ChudApp(App[None]):
     """
 
     def __init__(self, dev_hook: DevHook | None = None) -> None:
-        super().__init__()
+        # ANSI color mode makes the app/screen base render with the terminal's
+        # default background (Textual's `ansi_default`) rather than an opaque
+        # theme color, so a host terminal/tmux background shows through. The
+        # truecolor theme is preserved, so accents and modal surfaces keep their
+        # colors. Transparent panes (see widget CSS) then composite over this
+        # terminal-default base. Without it, `background: transparent` only
+        # composites over Textual's opaque `$background`.
+        super().__init__(ansi_color=True)
         self._dev_hook = dev_hook
         self.manager = SessionManager()
         self._event_log: dict[str, list[Event]] = defaultdict(list)
@@ -133,7 +138,22 @@ class ChudApp(App[None]):
         with Horizontal(id="main"):
             yield SessionListView()
             yield SessionView()
-        yield Footer()
+        yield ChudFooter(self._footer_hints())
+
+    def _footer_hints(self) -> list[tuple[str, str]]:
+        """Key hints for the footer, mirroring the app-level action bindings.
+
+        Scroll bindings are contextual and never surfaced in the bar.
+        """
+        hints: list[tuple[str, str]] = []
+        for binding in self.BINDINGS:
+            if isinstance(binding, tuple):
+                parts = list(binding)
+                if len(parts) >= 3:
+                    key, action, description = parts[0], parts[1], parts[2]
+                    if not action.startswith("scroll_"):
+                        hints.append((key, description))
+        return hints
 
     async def on_mount(self) -> None:
         self.manager.set_focus(True)
