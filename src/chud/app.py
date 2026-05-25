@@ -862,7 +862,11 @@ def main() -> int:
     import argparse
 
     from chud import __version__
-    from chud.dev import SCENARIOS
+
+    try:
+        from chud.dev import SCENARIOS
+    except ImportError:
+        SCENARIOS = None
 
     _muzzle_credential_prompts()
 
@@ -872,18 +876,19 @@ def main() -> int:
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.add_argument(
-        "--dev",
-        choices=sorted(SCENARIOS.keys()),
-        default=None,
-        help="(pre-release) launch the TUI with a dev scenario on top",
-    )
-    parser.add_argument(
-        "--seed",
-        type=Path,
-        default=None,
-        help="(pre-release) JSON file overriding the default seed for --dev",
-    )
+    if SCENARIOS is not None:
+        parser.add_argument(
+            "--dev",
+            choices=sorted(SCENARIOS.keys()),
+            default=None,
+            help="(pre-release) launch the TUI with a dev scenario on top",
+        )
+        parser.add_argument(
+            "--seed",
+            type=Path,
+            default=None,
+            help="(pre-release) JSON file overriding the default seed for --dev",
+        )
     args = parser.parse_args()
 
     log_path = state_mod.data_root() / "chud.log"
@@ -892,7 +897,7 @@ def main() -> int:
         filename=log_path,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    dev_hook = SCENARIOS[args.dev](args.seed) if args.dev else None
+    dev_hook = SCENARIOS[args.dev](args.seed) if SCENARIOS is not None and args.dev else None
     ChudApp(dev_hook=dev_hook).run()
     return 0
 
