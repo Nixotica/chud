@@ -35,8 +35,11 @@ All source lives under `src/chud/`. The module split is deliberate — keep conc
 - `session.py` — `AgentSession`. Wraps one `ClaudeSDKClient` and runs the per-session state machine. Intercepts the `ExitPlanMode` tool call to gate plan approval; uses `Stop` and `Notification` SDK hooks to detect idle and user-input requests.
 - `state.py` — JSON persistence. Resolves data dirs via `platformdirs.user_data_dir("chud")`. Atomic writes (temp file + rename).
 - `types.py` — Data models: `SessionStatus` enum, `SessionState`, `Worktree`, `Event`, `EventKind`. All dataclasses; JSON round-trippable.
-- `worktree.py` — `WorktreeManager`. Creates one git worktree per attached repo on branch `chud/{session_id}`. Idempotent re-attach. Disambiguates basename collisions (e.g., two repos named `api` → `api`, `api-2`). Raises `WorktreeError`.
-- `notify.py` — Thin wrapper around `notify-send` for desktop notifications.
+- `worktree.py` — `WorktreeManager`. Creates one git worktree per attached repo on branch `chud/{session_id}` via `GitPython`. Idempotent re-attach. Disambiguates basename collisions (e.g., two repos named `api` → `api`, `api-2`). Raises `WorktreeError`.
+- `gh.py` — GitHub helpers backed by `githubkit` (REST + GraphQL). `Issue`, `list_issues`, `list_issue_numbers_with_open_pr`. Token resolution lives in `_auth.py`.
+- `pr.py` — Draft-PR publishing. Uses `GitPython` for the git side (status / commit / fetch / push) and `githubkit` for `pulls.create`.
+- `_auth.py` — `resolve_github_token()`: layered lookup (`GH_TOKEN` → `GITHUB_TOKEN` → `~/.config/gh/hosts.yml`).
+- `notify.py` — Thin async wrapper around `desktop-notifier` for cross-platform desktop notifications.
 - `widgets/` — Pure Textual UI components:
   - `session_list.py` — left pane, list of all sessions with status glyph + prompt preview.
   - `session_view.py` — right pane: header, transcript, input box. `render_event()` dispatches by `EventKind`.
@@ -81,18 +84,24 @@ All under `~/.local/share/chud/` (resolved via `platformdirs`):
 
 ## Dependencies
 
-Runtime (`pyproject.toml`):
+Runtime (`pyproject.toml`, exact pins):
 
-- `claude-agent-sdk>=0.1.0` — agent runtime.
-- `textual>=8.2.4` — TUI framework.
-- `platformdirs>=4.0` — cross-platform data dirs.
+- `claude-agent-sdk` — agent runtime.
+- `textual` — TUI framework.
+- `platformdirs` — cross-platform data dirs.
+- `githubkit` — GitHub REST + GraphQL client (async, httpx under the hood).
+- `GitPython` — git operations (worktrees, status, commit, fetch, push).
+- `desktop-notifier` — async cross-platform desktop notifications.
+- `PyYAML` — parses `~/.config/gh/hosts.yml` for GitHub token fallback.
 
-Dev: `pytest>=9.0.3`, `pytest-asyncio>=1.3.0`, `ruff>=0.5`. Build backend: `hatchling`.
+Dev: `pytest`, `pytest-asyncio`, `ruff`, `pyright`, `respx` (HTTP mocking), `types-PyYAML`. Build backend: `hatchling`.
 
 ## Gotchas
 
 - **Plan mode is the safety gate.** Sessions auto-accept edits *after* plan approval. If you change `session.py`, do not bypass the `ExitPlanMode` interception or the `AWAITING_PLAN_APPROVAL` state — that's the only thing standing between an agent and unreviewed edits.
 - **Worktree re-attach is idempotent.** `WorktreeManager` reuses an existing worktree on the `chud/{session_id}` branch rather than failing — relevant when re-attaching after a crash.
 - **Persistence is local-only.** There's no remote sync. The `workspaces/` dir is intentionally `.gitignore`'d.
-- **Notifications need `notify-send`.** `notify.py` is a thin wrapper; missing binary degrades silently.
+- **Desktop notifications degrade silently.** `notify.py` uses `desktop-notifier`; missing backend (no DBus on Linux, etc.) is logged and swallowed so the TUI never blocks waiting on a notification.
+- **GitHub token resolution.** `_auth.py` looks at `GH_TOKEN`, then `GITHUB_TOKEN`, then `~/.config/gh/hosts.yml`. No token = issue picker hidden, PR publishing returns a `PRResult.error` — the same degrade-silently shape the legacy `gh`-CLI path produced.
+- **Credential prompts are muzzled at startup.** `app.main()` sets `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS=/bin/true` / `SSH_ASKPASS=/bin/true` so a sub-`git` (worktree, fetch, push) can't hang the TUI on an interactive password prompt.
 - Pre-alpha: APIs and on-disk formats may change without migration support.

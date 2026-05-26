@@ -9,7 +9,13 @@ from pathlib import Path
 from chud import pr as pr_mod
 from chud import state as state_mod
 from chud.notify import desktop_notify
-from chud.options import OPT_MAKE_DRAFT_PR, OPT_SELF_CLEANUP, normalize_effort, normalize_options
+from chud.options import (
+    OPT_MAKE_DRAFT_PR,
+    OPT_SELF_CLEANUP,
+    normalize_effort,
+    normalize_options,
+    normalize_run_mode,
+)
 from chud.session import AgentSession
 from chud.types import Event, EventKind, SessionState, SessionStatus
 from chud.worktree import WorktreeManager, is_git_repo
@@ -59,6 +65,7 @@ class SessionManager:
         launch_cwd: Path | None = None,
         effort: str | None = None,
         issue_number: int | None = None,
+        run_mode: str | None = None,
     ) -> AgentSession:
         sid = _new_session_id()
         st = SessionState(
@@ -67,6 +74,7 @@ class SessionManager:
             options=normalize_options(options),
             effort=normalize_effort(effort),
             issue_number=issue_number,
+            run_mode=normalize_run_mode(run_mode),
         )
 
         wt_mgr = WorktreeManager(st)
@@ -94,6 +102,7 @@ class SessionManager:
             launch_cwd=launch_cwd,
             attach_callback=_attach_for_agent,
             effort=st.effort,
+            run_mode=st.run_mode,
         )
         self.sessions[sid] = sess
         self.worktrees[sid] = wt_mgr
@@ -176,19 +185,19 @@ class SessionManager:
                 and not self._tui_focused
             )
             if should_notify:
-                desktop_notify("chud", f"Session {event.session_id[:6]} finished")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} finished")
             if status == SessionStatus.DONE.value:
                 await self._on_session_done(sess)
         elif event.kind == EventKind.NEEDS_USER_INPUT:
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} needs input")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} needs input")
         elif event.kind == EventKind.PLAN_PROPOSED:
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} has a plan to review")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} has a plan to review")
         elif event.kind == EventKind.ERROR:
             self._persist()
             if self._notify_enabled and not self._tui_focused:
-                desktop_notify("chud", f"Session {event.session_id[:6]} errored")
+                await desktop_notify("chud", f"Session {event.session_id[:6]} errored")
 
     # ------------------------------------------------------------------ DONE side-effects
 
@@ -262,8 +271,7 @@ class SessionManager:
                 )
 
         # Reuse the same task-tracking slot so kill_session cancels an
-        # in-flight publish-then-cleanup chain in O(1), exactly like the
-        # legacy ``_finish_done`` task did.
+        # in-flight publish-then-cleanup chain in O(1).
         task = asyncio.create_task(runner(), name=f"chud-pr-review-{session_id}")
         self._pr_tasks[session_id] = task
         task.add_done_callback(lambda _t, s=session_id: self._pr_tasks.pop(s, None))

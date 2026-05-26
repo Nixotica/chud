@@ -17,14 +17,15 @@ config.json`` atomically.
 from __future__ import annotations
 
 import contextlib
+from typing import cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Checkbox, Input, Label, Static, TextArea
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
 
 from chud.markup import TextHeading, TextMuted
-from chud.options import SESSION_OPTIONS
+from chud.options import RUN_MODE_CHOICES, RUN_MODE_DEFAULT, SESSION_OPTIONS
 from chud.settings import (
     KEY_BRANCH_PREFIX,
     KEY_INCLUDE_SLUG,
@@ -33,8 +34,15 @@ from chud.settings import (
     sanitize_branch_prefix,
     save_settings,
 )
-from chud.state import load_user_config, save_user_config, user_default_options
+from chud.state import (
+    load_user_config,
+    save_user_config,
+    user_default_options,
+    user_default_run_mode,
+)
+from chud.types import KEY_RUN_MODE
 from chud.widgets._scrollable_modal import ScrollableModalScreen
+from chud.widgets._vim_select import VimSelect
 from chud.widgets.check_mark_toggles import CheckMarkBox
 
 
@@ -133,6 +141,20 @@ class SettingsModal(ScrollableModalScreen[bool]):
                         tooltip=opt.description,
                     )
 
+                yield Label("Permission mode default", classes="section")
+                yield VimSelect(
+                    RUN_MODE_CHOICES,
+                    id="run-mode",
+                    value=user_default_run_mode(),
+                    allow_blank=False,
+                    tooltip=(
+                        "Default permission mode for new sessions. "
+                        "Full auto = unattended after plan approval. "
+                        "Default = use ~/.claude allow/deny rules; prompt for the rest. "
+                        "Low-perms = prompt for every Edit/Write/Bash."
+                    ),
+                )
+
                 yield Label("Branch format", classes="section")
                 yield Label("Branch prefix (e.g. `chud/`, `agent/`):", classes="field")
                 yield Input(
@@ -215,6 +237,13 @@ class SettingsModal(ScrollableModalScreen[bool]):
                 cfg[opt.id] = self.query_one(f"#opt-{opt.id}", Checkbox).value
             except Exception:
                 continue
+        # ``allow_blank=False`` on the Select guarantees a string here; we
+        # only fall back to the default if the widget is somehow missing
+        # (e.g. modal teardown raced with save).
+        try:
+            cfg[KEY_RUN_MODE] = cast(str, self.query_one("#run-mode", Select).value)
+        except Exception:
+            cfg[KEY_RUN_MODE] = RUN_MODE_DEFAULT
         save_user_config(cfg)
 
         try:

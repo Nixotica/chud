@@ -2,16 +2,16 @@
 
 Covers:
 
-* Empty plans submitted via ``ExitPlanMode`` are denied at the permission
-  layer without transitioning the session into ``AWAITING_PLAN_APPROVAL`` —
-  the agent never gets to surface a blank plan modal to the user.
-* Non-empty plans still go through the normal modal-gating flow.
-* A ``ResultMessage`` arriving before any plan was approved (e.g. the agent
-  gives up after a plan rejection) leaves the session in ``AWAITING_USER``
-  rather than transitioning to terminal ``DONE``, so the user can re-engage.
-* Post-approval ``ResultMessage`` still terminates the session in ``DONE``.
-
-See GitHub issue #64.
+* Empty/malformed plans submitted via ``ExitPlanMode`` are denied at the
+  permission layer without surfacing a blank plan modal.
+* Non-empty plans go through the normal modal-gating flow.
+* A ``ResultMessage`` arriving before any plan was approved leaves the session
+  in ``AWAITING_USER`` rather than terminal ``DONE``; a post-approval one still
+  terminates in ``DONE``.
+* Plan rejection interrupts the planning turn and replays any typed feedback as
+  a real user ``query()`` message — the model ignores feedback delivered through
+  the ``ExitPlanMode`` deny channel (it reads as untrusted tool output), so
+  re-engaging via a genuine user turn is what actually revises the plan.
 """
 
 from __future__ import annotations
@@ -55,7 +55,8 @@ async def _drain(sess: AgentSession) -> list:
 
 @pytest.mark.parametrize("plan", ["", "   ", "\n\t  \n"])
 async def test_exit_plan_mode_empty_plan_is_denied(plan: str):
-    """An empty or whitespace-only plan must not reach the approval modal."""
+    """An empty/whitespace plan is denied without transitioning state or
+    surfacing a plan modal to the UI."""
     sess = _make_session()
     result = await sess._on_tool_request(
         "ExitPlanMode",
@@ -64,29 +65,9 @@ async def test_exit_plan_mode_empty_plan_is_denied(plan: str):
     )
     assert isinstance(result, PermissionResultDeny)
     assert "non-empty plan" in result.message
-
-
-async def test_exit_plan_mode_empty_plan_does_not_transition_state():
-    """Empty-plan deny must leave status at PLANNING and not stash a future."""
-    sess = _make_session()
-    await sess._on_tool_request(
-        "ExitPlanMode",
-        {"plan": ""},
-        context=None,  # type: ignore[arg-type]
-    )
     assert sess.state.status == SessionStatus.PLANNING
     assert sess._plan_decision is None
     assert sess._pending_plan_text is None
-
-
-async def test_exit_plan_mode_empty_plan_emits_no_plan_proposed_event():
-    """No PLAN_PROPOSED event — the UI should never see an empty plan."""
-    sess = _make_session()
-    await sess._on_tool_request(
-        "ExitPlanMode",
-        {"plan": ""},
-        context=None,  # type: ignore[arg-type]
-    )
     events = await _drain(sess)
     assert not any(e.kind == EventKind.PLAN_PROPOSED for e in events)
 
@@ -152,12 +133,8 @@ async def test_result_message_before_plan_approval_becomes_awaiting_user(
     status: SessionStatus,
 ):
     """If the agent ends its turn before a plan was ever approved, surface
-    AWAITING_USER so the user can prompt again — not terminal DONE.
-
-    Regression test for GitHub issue #64: rejecting a plan and getting a
-    ResultMessage shortly after used to move the session to DONE, hiding the
-    fact that the user could still re-engage.
-    """
+    AWAITING_USER so the user can prompt again — not terminal DONE (which would
+    fire the auto-PR / cleanup pipeline on a session that never executed)."""
     sess = _make_session(status=status)
     await sess._dispatch_message(_make_result_message())
     assert sess.state.status == SessionStatus.AWAITING_USER
@@ -172,3 +149,99 @@ async def test_result_message_after_plan_approval_becomes_done(
     sess = _make_session(status=status)
     await sess._dispatch_message(_make_result_message())
     assert sess.state.status == SessionStatus.DONE
+
+
+# ---------------------------------------------------------------- rejection re-engagement
+
+
+class _RecordingClient:
+    """Captures query() calls so a rejection's feedback replay is observable."""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def query(self, text: str) -> None:
+        self.queries.append(text)
+
+
+async def _await_plan_decision(sess: AgentSession, plan: str) -> asyncio.Task:
+    """Drive ExitPlanMode interception until the approval future is pending."""
+    task = asyncio.create_task(
+        sess._on_tool_request("ExitPlanMode", {"plan": plan}, context=None)  # type: ignore[arg-type]
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if sess._plan_decision is not None:
+            break
+    assert sess._plan_decision is not None
+    return task
+
+
+async def test_reject_plan_with_feedback_interrupts_then_replays_as_user_message():
+    """The deny carries interrupt=True (so the model can't re-propose the same
+    plan within the turn), and once that turn ends the feedback is replayed as a
+    genuine query() user message — never via the model-distrusted deny channel —
+    leaving the session planning."""
+    sess = _make_session()
+    client = _RecordingClient()
+    sess._client = client  # type: ignore[assignment]
+    task = await _await_plan_decision(sess, "1. do X")
+
+    await sess.reject_plan(reason="use a different library")
+    result = await task
+    assert isinstance(result, PermissionResultDeny)
+    assert result.interrupt is True
+    assert sess._pending_plan_feedback == "use a different library"
+    assert sess._deny_pending is False
+
+    await sess._dispatch_message(_make_result_message())
+
+    assert client.queries == ["use a different library"]
+    assert sess._pending_plan_feedback is None
+    assert sess.state.status == SessionStatus.PLANNING
+
+
+async def test_reject_plan_without_feedback_awaits_user_followup():
+    """A bare reject (no modal text) has nothing to replay, so it parks the
+    session in AWAITING_USER and surfaces a NEEDS_USER_INPUT prompt."""
+    sess = _make_session()
+    task = await _await_plan_decision(sess, "1. do X")
+
+    await sess.reject_plan()
+    await task
+    assert sess._pending_plan_feedback is None
+    assert sess._deny_pending is True
+
+    await sess._dispatch_message(_make_result_message())
+
+    assert sess.state.status == SessionStatus.AWAITING_USER
+    assert sess._deny_pending is False
+    events = await _drain(sess)
+    assert any(e.kind == EventKind.NEEDS_USER_INPUT for e in events)
+
+
+async def test_input_box_followup_during_planning_resumes_planning_not_executing():
+    """A follow-up message sent while no plan is approved (e.g. after a bare
+    reject) must resume PLANNING, not EXECUTING — otherwise the post-approval
+    filesystem gate activates and blocks the CLI's own plan-file edits, so the
+    agent can't revise the plan."""
+    sess = _make_session(status=SessionStatus.AWAITING_USER)
+    client = _RecordingClient()
+    sess._client = client  # type: ignore[assignment]
+    assert sess.state.approved_plan is None
+
+    await sess.send_message("make the greeting French")
+
+    assert sess.state.status == SessionStatus.PLANNING
+    assert client.queries == ["make the greeting French"]
+
+
+async def test_input_box_followup_after_approval_resumes_executing():
+    """Once a plan is approved, a follow-up resumes EXECUTING as before."""
+    sess = _make_session(status=SessionStatus.AWAITING_USER)
+    sess._client = _RecordingClient()  # type: ignore[assignment]
+    sess.state.approved_plan = "approved plan"
+
+    await sess.send_message("keep going")
+
+    assert sess.state.status == SessionStatus.EXECUTING

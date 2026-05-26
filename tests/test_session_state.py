@@ -146,6 +146,41 @@ def test_session_state_defaults_issue_number_to_none_when_absent():
     assert SessionState.from_dict(legacy).issue_number is None
 
 
+def test_session_state_roundtrips_run_mode():
+    s = SessionState(id="abc123", run_mode="low_perms")
+    d = s.to_dict()
+    assert d["run_mode"] == "low_perms"
+    assert SessionState.from_dict(d).run_mode == "low_perms"
+
+
+def test_session_state_default_run_mode_is_full_auto():
+    s = SessionState(id="x")
+    d = s.to_dict()
+    assert d["run_mode"] == "full_auto"
+    assert SessionState.from_dict(d).run_mode == "full_auto"
+
+
+def test_legacy_session_without_run_mode_loads_as_full_auto():
+    legacy = {
+        "id": "old1",
+        "status": SessionStatus.DONE.value,
+        "initial_prompt": "legacy",
+        "attached_repos": {},
+        "created_at": datetime.now(UTC).isoformat(),
+        "last_activity_at": datetime.now(UTC).isoformat(),
+        "pending_question": None,
+        "error": None,
+    }
+    assert SessionState.from_dict(legacy).run_mode == "full_auto"
+
+
+def test_session_state_normalizes_unknown_persisted_run_mode():
+    s = SessionState(id="x")
+    d = s.to_dict()
+    d["run_mode"] = "bypass-all-the-things"
+    assert SessionState.from_dict(d).run_mode == "full_auto"
+
+
 def test_legacy_session_with_workspace_dir_key_is_silently_ignored():
     """Pre-rename sessions.json entries carry a ``workspace_dir`` key. The
     field has been removed; loading must not raise."""

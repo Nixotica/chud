@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
+from git import Repo
 
 from chud.types import SessionState
 from chud.worktree import (
@@ -23,20 +23,16 @@ def _isolated_worktrees_root(tmp_path_factory, monkeypatch):
     return root
 
 
-def _init_repo(path: Path) -> None:
+def _init_repo(path: Path) -> Repo:
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "-C", str(path), "init", "-b", "main"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.email", "t@t"], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.name", "t"], check=True, capture_output=True
-    )
+    repo = Repo.init(path, initial_branch="main")
+    with repo.config_writer() as cw:
+        cw.set_value("user", "email", "t@t")
+        cw.set_value("user", "name", "t")
     (path / "README").write_text("hi")
-    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True
-    )
+    repo.index.add(["README"])
+    repo.index.commit("init")
+    return repo
 
 
 def _init_repo_with_origin(repo: Path, bare: Path) -> None:
@@ -49,35 +45,18 @@ def _init_repo_with_origin(repo: Path, bare: Path) -> None:
     build without network.
     """
     bare.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", str(bare)], check=True, capture_output=True
-    )
-    _init_repo(repo)
-    subprocess.run(
-        ["git", "-C", str(repo), "remote", "add", "origin", str(bare)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "remote", "set-head", "origin", "main"],
-        check=True,
-        capture_output=True,
-    )
+    Repo.init(bare, bare=True, initial_branch="main")
+    local = _init_repo(repo)
+    origin = local.create_remote("origin", str(bare))
+    origin.push(refspec="main:main", set_upstream=True)
+    local.git.remote("set-head", "origin", "main")
 
 
 def _commit(repo: Path, filename: str, contents: str, message: str) -> str:
     (repo / filename).write_text(contents)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-m", message], check=True, capture_output=True
-    )
-    out = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    )
-    return out.stdout.strip()
+    r = Repo(repo)
+    r.index.add([filename])
+    return r.index.commit(message).hexsha
 
 
 def test_is_git_repo(tmp_path: Path):
@@ -259,27 +238,15 @@ def test_discard_empty_branch_removes_worktree_and_branch_ref(tmp_path: Path):
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
     assert wt.worktree_path.exists()
-    # Sanity: the branch was just created in the origin.
-    list_before = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", wt.branch],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert wt.branch in list_before.stdout
+    origin_repo = Repo(repo)
+    assert wt.branch in [h.name for h in origin_repo.heads]
 
     mgr.discard_empty_branch(str(repo))
 
     # (a) worktree path gone
     assert not wt.worktree_path.exists()
     # (b) branch ref gone from origin
-    list_after = subprocess.run(
-        ["git", "-C", str(repo), "branch", "--list", wt.branch],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert wt.branch not in list_after.stdout
+    assert wt.branch not in [h.name for h in origin_repo.heads]
     # (c) attached_repos entry removed
     assert str(repo) not in session.attached_repos
 
@@ -330,17 +297,12 @@ def test_attach_repo_forks_from_origin_default_not_local_head(tmp_path: Path):
     repo = tmp_path / "myrepo"
     bare = tmp_path / "myrepo-bare.git"
     _init_repo_with_origin(repo, bare)
-    a_oid = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    parent = Repo(repo)
+    a_oid = parent.head.commit.hexsha
 
     # Advance the parent repo's local HEAD past origin/main with a "WIP"
     # commit that hasn't been pushed.
-    subprocess.run(
-        ["git", "-C", str(repo), "checkout", "-b", "wip-other-session"],
-        check=True,
-        capture_output=True,
-    )
+    parent.create_head("wip-other-session").checkout()
     b_oid = _commit(repo, "leaked.txt", "do not leak me", "wip from another session")
     assert a_oid != b_oid
 
@@ -348,12 +310,7 @@ def test_attach_repo_forks_from_origin_default_not_local_head(tmp_path: Path):
     mgr = WorktreeManager(session)
     wt = mgr.attach_repo(repo)
 
-    head = subprocess.run(
-        ["git", "-C", str(wt.worktree_path), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    head = Repo(wt.worktree_path).head.commit.hexsha
     assert head == a_oid, "new chud branch must fork from origin/main, not local HEAD"
     assert not (wt.worktree_path / "leaked.txt").exists()
 
@@ -366,12 +323,7 @@ def test_attach_repo_records_start_head(tmp_path: Path):
 
     wt = mgr.attach_repo(repo)
 
-    expected = subprocess.run(
-        ["git", "-C", str(wt.worktree_path), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    expected = Repo(wt.worktree_path).head.commit.hexsha
     assert wt.start_head is not None
     assert wt.start_head == expected
     assert len(wt.start_head) == 40  # full sha, not abbreviated
@@ -386,12 +338,7 @@ def test_attach_repo_falls_back_to_local_main_without_origin(tmp_path: Path):
 
     wt = mgr.attach_repo(repo)
 
-    main_tip = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "main"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    main_tip = Repo(repo).heads.main.commit.hexsha
     assert wt.start_head == main_tip
 
 
@@ -399,20 +346,13 @@ def test_attach_repo_raises_when_no_base_branch_exists(tmp_path: Path):
     """Repo whose default-branch resolution lands on a non-existent ref → hard fail."""
     repo = tmp_path / "weirdrepo"
     repo.mkdir(parents=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "init", "-b", "develop"], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.email", "t@t"], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.name", "t"], check=True, capture_output=True
-    )
+    r = Repo.init(repo, initial_branch="develop")
+    with r.config_writer() as cw:
+        cw.set_value("user", "email", "t@t")
+        cw.set_value("user", "name", "t")
     (repo / "README").write_text("hi")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True
-    )
+    r.index.add(["README"])
+    r.index.commit("init")
     # No origin, no local "main" or "master" — only "develop" exists.
     # default_base_branch falls back to "main", which doesn't exist anywhere.
     session = SessionState(id="sess1", initial_prompt="add foo")

@@ -13,13 +13,18 @@ so PRs read as summaries of *what was done* rather than verbatim user input.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from chud.gh import _no_prompt_env, _run
+import httpx
+from git import Repo
+from git.exc import GitCommandError, HookExecutionError
+from githubkit.exception import GitHubException
+
+from chud.gh import _get_client, _resolve_remote_owner_name
 from chud.settings import render_pr_body_footer
 from chud.types import SessionState
 
@@ -27,18 +32,6 @@ log = logging.getLogger(__name__)
 
 
 _TITLE_LIMIT = 72
-
-# Re-exported so existing tests that monkeypatch ``chud.pr._run`` keep
-# working without churn. Internal callers in this module still resolve
-# ``_run`` through the local module dict, which the tests override.
-__all__ = [
-    "PRResult",
-    "_no_prompt_env",
-    "_run",
-    "publish_draft_prs",
-    "pick_title",
-    "pick_body",
-]
 
 
 @dataclass
@@ -51,41 +44,57 @@ class PRResult:
 
 
 async def _default_branch(repo_path: Path) -> str:
-    """Resolve the remote's default branch; fall back to ``main``.
+    """Resolve the remote's default branch via the GitHub REST API.
 
-    Mirrors ``worktree.default_base_branch`` (sync version) so the publish
-    path and the worktree-create path agree on the answer. The async copy
-    here exists because every other subprocess call in this module routes
-    through ``_run`` (which tests monkeypatch); using a sync helper would
-    bypass the test harness.
+    Falls back to ``"main"`` on any failure (no auth, no GitHub remote,
+    network error). Mirrors the role of ``worktree.default_base_branch``
+    on the publish path.
     """
-    rc, out, _ = await _run(
-        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        cwd=repo_path,
-    )
-    if rc == 0 and "/" in out:
-        return out.split("/", 1)[1]
-    rc, out, _ = await _run(
-        ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
-        cwd=repo_path,
-    )
-    if rc == 0 and out:
-        return out
-    return "main"
+    client = _get_client()
+    if client is None:
+        return "main"
+    owner_name = _resolve_remote_owner_name(repo_path)
+    if owner_name is None:
+        return "main"
+    owner, name = owner_name
+    try:
+        resp = await client.rest.repos.async_get(owner, name)
+    except (GitHubException, httpx.HTTPError) as e:
+        log.warning("repos.get default-branch lookup failed for %s/%s: %s", owner, name, e)
+        return "main"
+    return str(getattr(resp.parsed_data, "default_branch", "main") or "main")
+
+
+def _is_dirty_sync(worktree: Path) -> bool:
+    """Return True iff ``worktree`` has any tracked changes or untracked files."""
+    try:
+        return Repo(worktree).is_dirty(untracked_files=True)
+    except Exception:
+        # Caller falls through to the rev-list step where the real failure
+        # surfaces with a useful message.
+        return False
 
 
 async def _is_dirty(worktree: Path) -> bool:
-    """Return True iff ``worktree`` has any tracked changes or untracked files.
+    return await asyncio.to_thread(_is_dirty_sync, worktree)
 
-    Uses ``git status --porcelain``, which prints one line per modified or
-    untracked path and nothing at all on a clean tree. A non-zero git exit
-    is treated as "not dirty" so the caller falls through to the existing
-    rev-list step, where the real failure surfaces with a useful message.
+
+def _auto_commit_sync(worktree: Path, title: str, body: str) -> tuple[bool, str]:
+    """Stage and commit every change under one chud commit.
+
+    Returns ``(ok, err_text)``. On failure, ``err_text`` carries the git
+    error message (e.g. "Please tell me who you are" when ``user.email``
+    is unset, or a pre-commit hook's rejection).
     """
-    rc, out, _ = await _run(["git", "status", "--porcelain"], cwd=worktree)
-    if rc != 0:
-        return False
-    return bool(out.strip())
+    try:
+        repo = Repo(worktree)
+        repo.git.add(A=True)
+        repo.index.commit(f"{title}\n\n{body}")
+    except (HookExecutionError, GitCommandError) as e:
+        return False, str(e)
+    except Exception as e:
+        return False, str(e)
+    return True, ""
 
 
 async def _auto_commit(worktree: Path, title: str, body: str) -> tuple[bool, str]:
@@ -96,19 +105,11 @@ async def _auto_commit(worktree: Path, title: str, body: str) -> tuple[bool, str
     this helper, ``publish_draft_prs`` would see ``0`` commits ahead of base
     and discard the worktree as "abandoned" — losing the agent's work.
 
-    Returns ``(ok, err_text)``. On failure, ``err_text`` carries the git
-    stderr (e.g. "Please tell me who you are" when ``user.email`` is unset,
-    or a pre-commit hook's rejection). Author identity is deferred to the
-    user's local git config — fabricating a chud bot identity would silently
-    make commits the user can't push under their own credentials.
+    Author identity is deferred to the user's local git config —
+    fabricating a chud bot identity would silently make commits the user
+    can't push under their own credentials.
     """
-    rc, _, err = await _run(["git", "add", "-A"], cwd=worktree)
-    if rc != 0:
-        return False, err or "git add failed"
-    rc, _, err = await _run(["git", "commit", "-m", title, "-m", body], cwd=worktree)
-    if rc != 0:
-        return False, err or "git commit failed"
-    return True, ""
+    return await asyncio.to_thread(_auto_commit_sync, worktree, title, body)
 
 
 # Match a top-level "# heading" line (single hash, not ## or more). DOTALL is
@@ -164,9 +165,8 @@ def _title_from_prompt(prompt: str) -> str:
 def _body_from_prompt(session_id: str, prompt: str) -> str:
     """Fallback body when no approved plan is available.
 
-    The lead line is the user-configurable PR body footer template (default
-    matches the legacy ``*Draft PR opened by chud session ...*`` blurb), so
-    a custom template applies here too.
+    The lead line is the user-configurable PR body footer template, so a
+    custom template applies here too.
     """
     footer = render_pr_body_footer(session_id)
     return f"{footer}\n\nInitial prompt:\n\n```\n{prompt}\n```\n"
@@ -208,11 +208,45 @@ def _pick_body_inner(state: SessionState) -> str:
     return _body_from_prompt(state.id, state.initial_prompt)
 
 
-# Backwards-compatible aliases for any callers (and tests) still using the
-# original underscore-prefixed names. Safe to remove once no internal user
-# remains.
-_pick_title = pick_title
-_pick_body = pick_body
+def _count_commits_sync(worktree: Path, rev_range: str) -> int:
+    """Count commits in ``rev_range`` inside ``worktree``.
+
+    Returns ``-1`` on git failure so the caller can distinguish "0 commits"
+    (legitimate empty branch) from "couldn't compute" (real error).
+    """
+    try:
+        return sum(1 for _ in Repo(worktree).iter_commits(rev_range))
+    except GitCommandError:
+        return -1
+
+
+def _fetch_origin_sync(worktree: Path, ref: str) -> tuple[bool, str]:
+    """Best-effort ``git fetch origin <ref>`` from ``worktree``."""
+    try:
+        Repo(worktree).remotes.origin.fetch(ref)
+    except GitCommandError as e:
+        return False, str(e)
+    return True, ""
+
+
+def _push_branch_sync(worktree: Path, branch: str) -> tuple[bool, str]:
+    """Push ``branch`` to ``origin`` with upstream tracking set.
+
+    GitPython's ``PushInfo.flags`` is a bitfield; ``ERROR``/``REJECTED``/
+    ``REMOTE_REJECTED`` all signal a real push failure. Surface the summary
+    text so the UI gets a meaningful error blurb.
+    """
+    try:
+        repo = Repo(worktree)
+        push_infos = repo.remotes.origin.push(refspec=f"{branch}:{branch}", set_upstream=True)
+    except GitCommandError as e:
+        return False, str(e)
+    for info in push_infos:
+        error_flags = info.ERROR | info.REJECTED | info.REMOTE_REJECTED
+        if info.flags & error_flags:
+            summary = (info.summary or "push rejected").strip()
+            return False, summary
+    return True, ""
 
 
 async def publish_draft_prs(
@@ -227,11 +261,13 @@ async def publish_draft_prs(
     verbatim to every attached repo's PR; per-repo overrides are not modeled
     yet.
 
-    Returns one ``PRResult`` per attached repo. If ``gh`` isn't on PATH, returns
-    a single failure result tagged with an empty repo label.
+    Returns one ``PRResult`` per attached repo. If no GitHub auth is
+    available, returns a single failure result tagged with an empty repo
+    label.
     """
-    if shutil.which("gh") is None:
-        return [PRResult(repo_label="", branch="", error="gh CLI not installed")]
+    client = _get_client()
+    if client is None:
+        return [PRResult(repo_label="", branch="", error="no GitHub auth available")]
 
     title = title if title is not None else pick_title(state)
     body = body if body is not None else pick_body(state)
@@ -263,81 +299,79 @@ async def publish_draft_prs(
         # branch carries other sessions' commits but none of our own, the
         # ``origin/<base>..HEAD`` check below would still see those foreign
         # commits and proceed to publish a misleading PR — this gate stops
-        # that. Skipped for legacy worktrees persisted before the field
-        # existed (``start_head is None``); in that case the existing
+        # that. When ``start_head is None`` (field absent), the
         # ``origin/<base>..HEAD`` check is the only line of defense.
         if wt.start_head:
-            rc, count, err = await _run(
-                ["git", "rev-list", "--count", f"{wt.start_head}..HEAD"],
-                cwd=worktree,
+            session_count = await asyncio.to_thread(
+                _count_commits_sync, worktree, f"{wt.start_head}..HEAD"
             )
-            if rc == 0 and count.strip() == "0":
+            if session_count == 0:
                 results.append(PRResult(repo_label=label, branch=branch, discarded=True))
                 continue
 
         # Refresh ``origin/{base}`` before counting commits ahead. Without this,
         # a stale local ref (common when the user hasn't fetched in a while)
         # makes ``rev-list`` over-count, we push a branch whose tip already
-        # exists on the remote, and ``gh pr create`` opens an empty-diff PR.
+        # exists on the remote, and ``pulls.create`` opens an empty-diff PR.
         # Best-effort: a fetch failure (offline, auth) is logged and we fall
         # through to the existing rev-list, where the real failure surfaces.
-        rc, _, ferr = await _run(["git", "fetch", "origin", base], cwd=worktree)
-        if rc != 0:
-            log.warning("git fetch origin %s failed in %s: %s", base, worktree, ferr.strip())
+        ok, ferr = await asyncio.to_thread(_fetch_origin_sync, worktree, base)
+        if not ok:
+            log.warning("git fetch origin %s failed in %s: %s", base, worktree, ferr)
 
-        rc, count, err = await _run(
-            ["git", "rev-list", "--count", f"origin/{base}..HEAD"],
-            cwd=worktree,
-        )
-        if rc != 0:
+        ahead = await asyncio.to_thread(_count_commits_sync, worktree, f"origin/{base}..HEAD")
+        if ahead < 0:
             results.append(
                 PRResult(
                     repo_label=label,
                     branch=branch,
-                    error=f"could not count commits vs origin/{base}: {err or count}",
+                    error=f"could not count commits vs origin/{base}",
                 )
             )
             continue
-        if count.strip() == "0":
-            # We just confirmed clean (no dirty edits) AND no commits ahead
-            # of base — this branch is genuinely abandoned. Mark it for
-            # silent cleanup rather than emitting a noisy PR_FAILED toast.
+        if ahead == 0:
+            # Clean (no dirty edits) AND no commits ahead of base — this
+            # branch is genuinely abandoned. Mark it for silent cleanup
+            # rather than emitting a noisy PR_FAILED toast.
             results.append(PRResult(repo_label=label, branch=branch, discarded=True))
             continue
 
-        rc, _, err = await _run(
-            ["git", "push", "-u", "origin", branch],
-            cwd=worktree,
-        )
-        if rc != 0:
+        ok, perr = await asyncio.to_thread(_push_branch_sync, worktree, branch)
+        if not ok:
             results.append(
-                PRResult(repo_label=label, branch=branch, error=f"git push failed: {err}")
+                PRResult(repo_label=label, branch=branch, error=f"git push failed: {perr}")
             )
             continue
 
-        rc, url, err = await _run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--draft",
-                "--base",
-                base,
-                "--head",
-                branch,
-                "--title",
-                title,
-                "--body",
-                body,
-            ],
-            cwd=origin,
-        )
-        if rc != 0:
+        owner_name = _resolve_remote_owner_name(origin)
+        if owner_name is None:
             results.append(
-                PRResult(repo_label=label, branch=branch, error=f"gh pr create failed: {err}")
+                PRResult(
+                    repo_label=label,
+                    branch=branch,
+                    error="origin is not a recognized GitHub remote",
+                )
+            )
+            continue
+        owner, name = owner_name
+
+        try:
+            resp = await client.rest.pulls.async_create(
+                owner,
+                name,
+                title=title,
+                body=body,
+                head=branch,
+                base=base,
+                draft=True,
+            )
+        except (GitHubException, httpx.HTTPError) as e:
+            results.append(
+                PRResult(repo_label=label, branch=branch, error=f"pulls.create failed: {e}")
             )
             continue
 
-        results.append(PRResult(repo_label=label, branch=branch, url=url or None))
+        url = getattr(resp.parsed_data, "html_url", None)
+        results.append(PRResult(repo_label=label, branch=branch, url=str(url) if url else None))
 
     return results

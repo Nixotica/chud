@@ -21,6 +21,9 @@ def _make_session(tmp_path: Path) -> AgentSession:
     del tmp_path
     state = SessionState(id="t-question")
     state.status = SessionStatus.EXECUTING
+    # EXECUTING is only reachable after plan approval, so the state carries an
+    # approved plan — answering a question then resumes EXECUTING (not PLANNING).
+    state.approved_plan = "approved plan"
     return AgentSession(state)
 
 
