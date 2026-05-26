@@ -94,6 +94,9 @@ class AgentSession:
         # giveup as a successful finish. Cleared when the user sends a fresh
         # message (start of a new turn).
         self._deny_pending: bool = False
+        # Plan-rejection feedback, replayed as a user message once the
+        # interrupted planning turn ends (see reject_plan).
+        self._pending_plan_feedback: str | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -169,6 +172,7 @@ class AgentSession:
             self._plan_decision.set_result(PermissionResultDeny(message="Session stopped."))
         self._plan_decision = None
         self._pending_plan_text = None
+        self._pending_plan_feedback = None
 
         if self._question_decision is not None and not self._question_decision.done():
             self._question_decision.set_result(PermissionResultDeny(message="Session stopped."))
@@ -198,13 +202,25 @@ class AgentSession:
 
     # ------------------------------------------------------------------ user input
 
+    def _resume_status(self) -> SessionStatus:
+        """Status to resume into when the user supplies input.
+
+        Until a plan is approved the SDK is in plan mode, where a user message
+        continues planning. Flipping to EXECUTING there would arm the
+        post-approval filesystem gate (blocking the CLI's own plan-file edits,
+        so the plan can't be revised) and let a plan-mode turn-end fall through
+        to DONE.
+        """
+        return SessionStatus.EXECUTING if self.state.approved_plan else SessionStatus.PLANNING
+
     async def send_message(self, text: str) -> None:
         if self._client is None:
             raise RuntimeError("session not started")
         if self.state.status == SessionStatus.AWAITING_USER:
-            await self._set_status(SessionStatus.EXECUTING)
+            await self._set_status(self._resume_status())
         self.state.pending_question = None
         self._deny_pending = False
+        self._pending_plan_feedback = None
         await self._client.query(text)
 
     async def approve_plan(self) -> None:
@@ -238,14 +254,27 @@ class AgentSession:
         self._pending_plan_text = None
         await self._set_status(SessionStatus.EXECUTING)
 
-    async def reject_plan(self, reason: str = "User rejected the plan.") -> None:
+    async def reject_plan(self, reason: str = "") -> None:
+        """Reject the pending plan and re-engage the agent with the feedback.
+
+        The model treats feedback sent through the ``ExitPlanMode`` deny message
+        as untrusted tool output and ignores it (re-proposing the same plan), so
+        the deny instead interrupts the planning turn; once it ends,
+        ``_dispatch_message`` replays the feedback as a real ``query()`` user
+        message — which the model acts on. A bare reject (no ``reason``) parks
+        the session in AWAITING_USER for the user's follow-up.
+        """
         if self._plan_decision is None or self._plan_decision.done():
             log.warning("reject_plan called with no pending decision (session %s)", self.state.id)
             return
-        self._plan_decision.set_result(PermissionResultDeny(message=reason))
+        self._plan_decision.set_result(
+            PermissionResultDeny(message="User rejected the plan.", interrupt=True)
+        )
         self._plan_decision = None
         self._pending_plan_text = None
-        self._deny_pending = True
+        feedback = reason.strip()
+        self._pending_plan_feedback = feedback or None
+        self._deny_pending = not feedback
         await self._set_status(SessionStatus.PLANNING)
 
     async def answer_question(self, answer_text: str) -> None:
@@ -263,7 +292,7 @@ class AgentSession:
         self._question_decision.set_result(PermissionResultDeny(message=answer_text))
         self._question_decision = None
         self._pending_question_input = None
-        await self._set_status(SessionStatus.EXECUTING)
+        await self._set_status(self._resume_status())
 
     async def approve_tool(self) -> None:
         """Resolve a pending per-tool permission prompt with allow.
@@ -305,6 +334,14 @@ class AgentSession:
         """Permission interception. Gates on ExitPlanMode; allows everything else."""
         if tool_name == "ExitPlanMode":
             plan_text = str(tool_input.get("plan", "")).strip()
+            if not plan_text:
+                return PermissionResultDeny(
+                    message=(
+                        "ExitPlanMode requires a non-empty plan. Continue "
+                        "planning and call ExitPlanMode again with the "
+                        "proposed plan written out in the `plan` argument."
+                    )
+                )
             self._pending_plan_text = plan_text
             self._plan_decision = asyncio.get_event_loop().create_future()
             await self._set_status(SessionStatus.AWAITING_PLAN_APPROVAL)
@@ -570,7 +607,16 @@ class AgentSession:
             # Full ResultMessage stats stay in chud.log; the UI just sees the
             # status transition emitted by _set_status.
             log.debug("ResultMessage for session %s: %s", self.state.id, _stringify(msg))
-            if self._deny_pending:
+            if self._pending_plan_feedback is not None:
+                # Plan rejected with feedback: the interrupt ended the turn, so
+                # replay the feedback as a real user message and keep planning.
+                feedback = self._pending_plan_feedback
+                self._pending_plan_feedback = None
+                self._deny_pending = False
+                await self._set_status(SessionStatus.PLANNING)
+                if self._client is not None:
+                    await self._client.query(feedback)
+            elif self._deny_pending:
                 # The agent ended its turn after the user denied an edit or
                 # rejected a plan. Don't treat this as a successful completion
                 # (which would auto-publish a PR / trigger cleanup); park the
@@ -588,6 +634,16 @@ class AgentSession:
                         ),
                     },
                 )
+            elif self.state.status in (
+                SessionStatus.NEW,
+                SessionStatus.PLANNING,
+                SessionStatus.AWAITING_PLAN_APPROVAL,
+            ):
+                # DONE is reserved for sessions whose plan was approved and whose
+                # execution finished. If the agent ended its turn without ever
+                # getting past plan approval, surface AWAITING_USER so the user
+                # can re-engage rather than collapsing into terminal DONE.
+                await self._set_status(SessionStatus.AWAITING_USER)
             else:
                 await self._set_status(SessionStatus.DONE)
         else:

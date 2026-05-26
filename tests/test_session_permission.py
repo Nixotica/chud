@@ -365,22 +365,6 @@ async def test_result_message_after_deny_routes_to_awaiting_user_not_done():
     assert saw_input
 
 
-async def test_result_message_after_reject_plan_routes_to_awaiting_user_not_done():
-    """Same guarantee as the edit-deny path, applied to plan rejection. The
-    agent giving up after a rejected plan must not silently 'complete' and
-    trigger PR/cleanup."""
-    sess = _make_session("default", status=SessionStatus.AWAITING_PLAN_APPROVAL)
-    sess._plan_decision = asyncio.get_event_loop().create_future()
-    await sess.reject_plan(reason="try another approach")
-    assert sess._deny_pending is True
-    assert sess.state.status == SessionStatus.PLANNING
-
-    await sess._dispatch_message(_result_message())
-
-    assert sess.state.status == SessionStatus.AWAITING_USER
-    assert sess._deny_pending is False
-
-
 async def test_send_message_clears_deny_flag():
     """A user-supplied follow-up resets the turn — the next ResultMessage
     represents a fresh agent loop and should route to DONE normally."""
